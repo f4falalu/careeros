@@ -1,38 +1,57 @@
-// CareerOS API — Phase 0. Proves the stack: DB, Redis, Ollama, and a local round-trip via the router.
-import { serve } from "@hono/node-server";
-import { Hono } from "hono";
-import postgres from "postgres";
-import Redis from "ioredis";
-import { config, DEFAULT_LOCAL_MODEL } from "./config";
-import { complete, ollamaHealthy } from "./router/modelRouter";
+// CareerOS API — Phase 1. DB layer, REST routes, auth middleware, WebSocket hub.
+import { createServer } from 'http'
+import { Hono } from 'hono'
+import postgres from 'postgres'
+import Redis from 'ioredis'
+import { config, DEFAULT_LOCAL_MODEL } from './config.js'
+import { complete, ollamaHealthy } from './router/modelRouter.js'
+import { authMiddleware } from './middleware/auth.js'
+import { createWsHub } from './ws/index.js'
+import { profileRoutes } from './routes/profile.js'
+import { achievementsRoutes } from './routes/achievements.js'
+import { opportunitiesRoutes } from './routes/opportunities.js'
+import { companiesRoutes } from './routes/companies.js'
+import { applicationsRoutes } from './routes/applications.js'
+import { assetsRoutes } from './routes/assets.js'
+import { tasksRoutes } from './routes/tasks.js'
+import { actionsRoutes } from './routes/actions.js'
+import { intakeRoutes } from './routes/intake.js'
+import { settingsRoutes } from './routes/settings.js'
+import { startTelegramBot } from './channels/telegram.js'
+import { startAgentWorker } from './workers/agentWorker.js'
 
-const app = new Hono();
+const app = new Hono()
 
-app.get("/health", async (c) => {
+// ── Public routes ─────────────────────────────────────────────
+app.get('/health', async (c) => {
   // DB
-  let dbOk = false;
+  let dbOk = false
   try {
-    const sql = postgres(config.databaseUrl, { max: 1, connect_timeout: 3 });
-    await sql`SELECT 1`;
-    await sql.end();
-    dbOk = true;
+    const sql = postgres(config.databaseUrl, { max: 1, connect_timeout: 3 })
+    await sql`SELECT 1`
+    await sql.end()
+    dbOk = true
   } catch { /* dbOk stays false */ }
 
   // Redis
-  let redisOk = false;
+  let redisOk = false
   try {
-    const redis = new Redis(config.redisUrl, { lazyConnect: true, connectTimeout: 3000, maxRetriesPerRequest: 1 });
-    await redis.connect();
-    await redis.ping();
-    redis.disconnect();
-    redisOk = true;
+    const redis = new Redis(config.redisUrl, {
+      lazyConnect: true,
+      connectTimeout: 3000,
+      maxRetriesPerRequest: 1,
+    })
+    await redis.connect()
+    await redis.ping()
+    redis.disconnect()
+    redisOk = true
   } catch { /* redisOk stays false */ }
 
   // Ollama
-  const { ok: ollamaOk, models } = await ollamaHealthy();
+  const { ok: ollamaOk, models } = await ollamaHealthy()
 
   return c.json({
-    status: dbOk && redisOk ? "ok" : "degraded",
+    status: dbOk && redisOk ? 'ok' : 'degraded',
     db: dbOk,
     redis: redisOk,
     ollama: ollamaOk,
@@ -41,21 +60,108 @@ app.get("/health", async (c) => {
     modelTier: config.modelTier,
     cloudFallbackEnabled: config.cloudFallbackEnabled,
     blockCloudPersonalData: config.blockCloudPersonalData,
-  });
-});
+  })
+})
 
 // Phase 0 proof: send a prompt through the router to the local model.
-app.post("/dev/llm-roundtrip", async (c) => {
-  const body = await c.req.json().catch(() => ({}));
-  const prompt = body.prompt ?? "Reply with exactly: CareerOS is alive.";
+app.post('/dev/llm-roundtrip', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  const prompt = (body as Record<string, string>).prompt ?? 'Reply with exactly: CareerOS is alive.'
   try {
-    const result = await complete(prompt, { taskType: "dev_ping", containsPersonalData: false });
-    return c.json(result);
+    const result = await complete(prompt, { taskType: 'dev_ping', containsPersonalData: false })
+    return c.json(result)
   } catch (err) {
-    return c.json({ error: String(err), hint: "Is Ollama up and the model pulled? See QUICKSTART.md" }, 500);
+    return c.json(
+      { error: String(err), hint: 'Is Ollama up and the model pulled? See QUICKSTART.md' },
+      500,
+    )
   }
-});
+})
 
-const port = 8000;
-serve({ fetch: app.fetch, port });
-console.log(`CareerOS API on http://localhost:${port}`);
+// ── Auth middleware — applied per-prefix ──────────────────────
+app.use('/profile/*', authMiddleware)
+app.use('/achievements/*', authMiddleware)
+app.use('/opportunities/*', authMiddleware)
+app.use('/companies/*', authMiddleware)
+app.use('/applications/*', authMiddleware)
+app.use('/resumes/*', authMiddleware)
+app.use('/tasks/*', authMiddleware)
+app.use('/actions/*', authMiddleware)
+app.use('/intake/*', authMiddleware)
+app.use('/settings/*', authMiddleware)
+app.use('/outreach/*', authMiddleware)
+
+// ── Mount route handlers ──────────────────────────────────────
+app.route('/profile', profileRoutes)
+app.route('/achievements', achievementsRoutes)
+app.route('/opportunities', opportunitiesRoutes)
+app.route('/companies', companiesRoutes)
+app.route('/applications', applicationsRoutes)
+// assets routes serve two mount points: /opportunities/:id/resume, /opportunities/:id/cover-letter, /resumes/:id
+app.route('/', assetsRoutes)
+app.route('/tasks', tasksRoutes)
+app.route('/actions', actionsRoutes)
+app.route('/intake', intakeRoutes)
+app.route('/settings', settingsRoutes)
+
+// ── Outreach stubs (Phase 2) ──────────────────────────────────
+app.post('/outreach', async (c) => {
+  return c.json({ code: 'not_implemented', message: 'Outreach agent available in Phase 2' }, 501)
+})
+app.post('/outreach/:id/approve', async (c) => {
+  return c.json({ code: 'not_implemented', message: 'Outreach approve available in Phase 2' }, 501)
+})
+
+// ── Create Node HTTP server + attach WebSocket hub ────────────
+const port = 8000
+
+const server = createServer((req, res) => {
+  // Convert incoming Node request to a Fetch Request for Hono
+  const url = `http://localhost:${port}${req.url ?? '/'}`
+  const headers: Record<string, string> = {}
+  for (const [key, val] of Object.entries(req.headers)) {
+    if (val !== undefined) {
+      headers[key] = Array.isArray(val) ? val.join(', ') : val
+    }
+  }
+
+  const chunks: Buffer[] = []
+  req.on('data', (chunk: Buffer) => chunks.push(chunk))
+  req.on('end', () => {
+    const body = chunks.length > 0 ? Buffer.concat(chunks) : undefined
+    const fetchReq = new Request(url, {
+      method: req.method ?? 'GET',
+      headers,
+      body: body && body.length > 0 ? body : undefined,
+    })
+
+    app
+      .fetch(fetchReq)
+      .then(async (honoRes) => {
+        const resHeaders: Record<string, string> = {}
+        honoRes.headers.forEach((val, key) => {
+          resHeaders[key] = val
+        })
+        res.writeHead(honoRes.status, resHeaders)
+        const buf = await honoRes.arrayBuffer()
+        res.end(Buffer.from(buf))
+      })
+      .catch((err) => {
+        console.error('[server] Unhandled error:', err)
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Internal server error' }))
+      })
+  })
+})
+
+// Attach WebSocket hub to the same HTTP server
+createWsHub(server)
+
+server.listen(port, () => {
+  console.log(`CareerOS API on http://localhost:${port}`)
+  console.log(`WebSocket available at ws://localhost:${port}/ws`)
+
+  // Start async workers (after server is bound so port is confirmed open)
+  startAgentWorker()
+  startTelegramBot().catch((err) => console.error('[telegram] failed to start:', err))
+})

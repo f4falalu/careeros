@@ -5,9 +5,10 @@
 // Precedence: privacy block > master fallback switch > tier default. (Cost caps/per-task overrides
 // wire in Phase 1 against app_settings.)
 
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { generateText } from "ai";
-import { config, DEFAULT_LOCAL_MODEL } from "../config";
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
+import { generateText, generateObject } from 'ai'
+import { z } from 'zod'
+import { config, DEFAULT_LOCAL_MODEL } from '../config.js'
 
 export type ModelKind = "local" | "cloud";
 export interface RouteDecision {
@@ -68,6 +69,31 @@ export async function complete(
   const route = decideRoute(opts.taskType ?? "generic", opts.containsPersonalData ?? false, opts.allowCloud ?? false);
   const { text } = await generateText({ model: modelHandle(route), prompt });
   return { text, modelKind: route.modelKind, modelName: route.modelName, reason: route.reason };
+}
+
+// Structured generation with Zod schema validation.
+// Uses generateObject from the AI SDK so the model returns a well-typed object directly.
+export async function generateStructured<T>(
+  prompt: string,
+  schema: z.ZodType<T>,
+  opts: {
+    taskType?: string
+    containsPersonalData?: boolean
+    allowCloud?: boolean
+  } = {},
+): Promise<{ data: T; modelKind: ModelKind; modelName: string; reason: string }> {
+  const route = decideRoute(
+    opts.taskType ?? "generic",
+    opts.containsPersonalData ?? false,
+    opts.allowCloud ?? false,
+  );
+  const { object } = await generateObject({ model: modelHandle(route), prompt, schema });
+  return {
+    data: object,
+    modelKind: route.modelKind,
+    modelName: route.modelName,
+    reason: route.reason,
+  };
 }
 
 // Used by /health: is Ollama up and which models are pulled?
