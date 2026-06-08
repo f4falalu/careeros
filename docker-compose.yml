@@ -1,0 +1,53 @@
+# CareerOS — Phase 0 stack. `docker compose up` brings up everything.
+# After it's up: curl http://localhost:8000/health  → should show ollama:true once a model is pulled.
+services:
+  postgres:
+    image: pgvector/pgvector:pg16          # postgres 16 with pgvector preinstalled
+    environment:
+      POSTGRES_USER: careeros
+      POSTGRES_PASSWORD: careeros
+      POSTGRES_DB: careeros
+    ports: ["5432:5432"]
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./docs/07-SCHEMA.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro   # auto-loads on first boot
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U careeros"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    volumes: ["./data/redis:/data"]
+
+  ollama:
+    image: ollama/ollama:latest
+    ports: ["11434:11434"]
+    volumes: ["./data/ollama:/root/.ollama"]
+    # GPU users: uncomment the deploy block below (needs nvidia-container-toolkit).
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+
+  api:
+    build: ./apps/api          # Node 20 + Hono + Mastra (TypeScript)
+    env_file: .env
+    depends_on:
+      postgres: { condition: service_healthy }
+    ports: ["8000:8000"]
+    volumes:
+      - ./apps/api:/app
+      - /app/node_modules       # don't clobber container-installed deps
+    command: npm run dev
+
+  web:
+    image: node:20-alpine
+    working_dir: /app
+    depends_on: [api]
+    ports: ["3000:3000"]
+    volumes: ["./apps/web:/app"]
+    # Phase 0 web is a placeholder; Next.js (Lovable/Claude Code) fills apps/web in Phase 1.
+    command: sh -c "echo 'web placeholder — scaffold the Next.js app here in Phase 1' && tail -f /dev/null"

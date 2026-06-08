@@ -1,0 +1,18 @@
+{
+  "defaultMode": "plan",
+  "permissions": {
+    "allow": [
+      "read:./careeros/**",
+      "write:./careeros/**",
+      "network:github.com",
+      "network:registry.npmjs.org",
+      "network:ollama:11434"
+    ],
+    "deny": [
+      "read:~/.ssh",
+      "read:~/.aws",
+      "read:~/.config/1password",
+      "write:/**"
+    ]
+  }
+}

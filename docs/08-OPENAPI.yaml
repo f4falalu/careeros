@@ -1,0 +1,656 @@
+openapi: 3.1.0
+info:
+  title: CareerOS API
+  version: 0.1.0
+  description: >
+    AI-native, local-first career operating system. Chat channels (Telegram/WhatsApp) and the web
+    dashboard both drive the same agents through this API. v1 is single-user; auth is a bearer token.
+    Long-running agent work is async: endpoints that trigger agents return an AgentTask you poll, and
+    the dashboard subscribes to /ws for live updates.
+servers:
+  - url: http://localhost:8000
+    description: Local dev
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      summary: Liveness + model-backend status
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  ollama: { type: boolean }
+                  cloud_fallback_enabled: { type: boolean }
+
+  # ── Profile ───────────────────────────────────────────────
+  /profile:
+    get:
+      summary: Get the career profile (master resume, tone prefs)
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Profile' } } } }
+    put:
+      summary: Update the profile
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ProfileInput' } } }
+      responses:
+        '200': { description: Updated, content: { application/json: { schema: { $ref: '#/components/schemas/Profile' } } } }
+
+  /achievements:
+    get:
+      summary: List achievements
+      responses: { '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Achievement' } } } } } }
+    post:
+      summary: Add achievement
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AchievementInput' } } } }
+      responses: { '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Achievement' } } } } }
+
+  # ── Intake (the killer loop) ──────────────────────────────
+  /intake:
+    post:
+      summary: Submit a job (URL / text / PDF ref / image ref). Triggers the Intake + Research agents async.
+      description: Returns immediately with the created opportunity (partial) and the AgentTask ids running on it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_channel]
+              properties:
+                url: { type: string, format: uri }
+                text: { type: string }
+                file_path: { type: string, description: object-store key of an uploaded PDF/image }
+                source_channel: { $ref: '#/components/schemas/SourceChannel' }
+      responses:
+        '202':
+          description: Accepted; agents dispatched
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  opportunity: { $ref: '#/components/schemas/Opportunity' }
+                  tasks: { type: array, items: { $ref: '#/components/schemas/AgentTask' } }
+
+  # ── Opportunities ─────────────────────────────────────────
+  /opportunities:
+    get:
+      summary: List opportunities
+      parameters:
+        - { name: stage, in: query, schema: { $ref: '#/components/schemas/PipelineStage' } }
+        - { name: limit, in: query, schema: { type: integer, default: 50 } }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/OpportunityPage' } } } } }
+  /opportunities/{id}:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+    get:
+      summary: Get opportunity with company, match score, and linked assets
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/OpportunityDetail' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /opportunities/{id}/match:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+    post:
+      summary: (Re)compute match score vs profile
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/MatchScore' } } } } }
+
+  # ── Asset generation (each triggers an agent async) ───────
+  /opportunities/{id}/resume:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+    post:
+      summary: Generate a tailored resume version (Resume agent). Output passes the no-fabrication validator.
+      responses: { '202': { description: Accepted, content: { application/json: { schema: { $ref: '#/components/schemas/AgentTask' } } } } }
+  /opportunities/{id}/cover-letter:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+    post:
+      summary: Generate a cover letter (Cover agent)
+      requestBody: { content: { application/json: { schema: { type: object, properties: { tone: { type: string, enum: [formal, warm, direct] } } } } } }
+      responses: { '202': { description: Accepted, content: { application/json: { schema: { $ref: '#/components/schemas/AgentTask' } } } } }
+  /opportunities/{id}/vvp:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+    post:
+      summary: Generate a Value Validation Project (VVP agent)
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { kind: { $ref: '#/components/schemas/VvpKind' }, format: { $ref: '#/components/schemas/VvpFormat' } } } } }
+      responses: { '202': { description: Accepted, content: { application/json: { schema: { $ref: '#/components/schemas/AgentTask' } } } } }
+
+  /resumes/{id}:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+    get:
+      summary: Get a resume version (+ pdf url)
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ResumeVersion' } } } } }
+
+  # ── Companies ─────────────────────────────────────────────
+  /companies/{id}:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+    get:
+      summary: Company with latest brief
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/CompanyDetail' } } } } }
+  /companies/{id}/brief:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+    post:
+      summary: Generate / refresh the company brief (Research agent, async)
+      responses: { '202': { description: Accepted, content: { application/json: { schema: { $ref: '#/components/schemas/AgentTask' } } } } }
+
+  # ── Applications / pipeline ───────────────────────────────
+  /applications:
+    get:
+      summary: List applications (Kanban/CRM source)
+      parameters: [{ name: stage, in: query, schema: { $ref: '#/components/schemas/PipelineStage' } }]
+      responses: { '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Application' } } } } } }
+    post:
+      summary: Create an application from an opportunity
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [opportunity_id], properties: { opportunity_id: { type: string, format: uuid } } } } } }
+      responses: { '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Application' } } } } }
+  /applications/{id}/stage:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+    patch:
+      summary: Move pipeline stage (records a stage_event)
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [to_stage], properties: { to_stage: { $ref: '#/components/schemas/PipelineStage' }, note: { type: string } } } } } }
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Application' } } } } }
+
+  # ── Outreach (draft-only; approval-gated) ─────────────────
+  /outreach:
+    post:
+      summary: Draft outreach messages (Outreach agent, async). Always created in 'draft'.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [contact_role]
+              properties:
+                opportunity_id: { type: string, format: uuid }
+                contact_id: { type: string, format: uuid }
+                contact_role: { $ref: '#/components/schemas/ContactRole' }
+                channel: { $ref: '#/components/schemas/MessageChannel' }
+      responses: { '202': { description: Accepted, content: { application/json: { schema: { $ref: '#/components/schemas/AgentTask' } } } } }
+  /outreach/{id}/approve:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+    post:
+      summary: Approve a draft (state draft → approved). Sending is a separate, explicit step in v1.
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/OutreachMessage' } } } } }
+
+  # ── Interview ─────────────────────────────────────────────
+  /applications/{id}/interview-brief:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+    post:
+      summary: Generate interview brief (Interview agent, async)
+      responses: { '202': { description: Accepted, content: { application/json: { schema: { $ref: '#/components/schemas/AgentTask' } } } } }
+
+  # ── Agent tasks (audit + live feed) ───────────────────────
+  /tasks:
+    get:
+      summary: Agent task feed (powers the dashboard AI command layer)
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/AgentStatus' } }
+        - { name: limit, in: query, schema: { type: integer, default: 50 } }
+      responses: { '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/AgentTask' } } } } } }
+  /tasks/{id}:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+    get:
+      summary: Poll a single task
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AgentTask' } } } } }
+  /tasks/{id}/approve:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+    post:
+      summary: Approve a task sitting in needs_approval (resumes the agent)
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AgentTask' } } } } }
+
+  # ── Chat-action callback (used by Telegram/WhatsApp menu replies) ──
+  /actions:
+    post:
+      summary: Execute a numbered menu action from a chat reply (e.g. "1,3" → tailor resume + draft outreach)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [opportunity_id, actions, source_channel]
+              properties:
+                opportunity_id: { type: string, format: uuid }
+                actions: { type: array, items: { type: string, enum: [tailor_resume, build_vvp, draft_outreach, cover_letter, mark_applied] } }
+                source_channel: { $ref: '#/components/schemas/SourceChannel' }
+      responses: { '202': { description: Accepted, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/AgentTask' } } } } } }
+
+  # ── WebSocket (documented for reference) ──────────────────
+  /ws:
+    get:
+      summary: WebSocket stream of AgentTask updates (dashboard live feed). Upgrade required.
+      responses: { '101': { description: Switching Protocols } }
+
+  # ── Settings & configuration (see docs/10-SETTINGS.md) ────
+  /settings:
+    get:
+      summary: Full settings (all secrets masked)
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Settings' } } } } }
+    patch:
+      summary: Update routing / inference / search / preferences / privacy
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SettingsInput' } } } }
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Settings' } } } } }
+
+  /settings/providers:
+    get:
+      summary: List AI providers (keys masked — last4 only)
+      responses: { '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ProviderConfig' } } } } } }
+    post:
+      summary: Add/update a provider and its API key (plaintext accepted here, never echoed back)
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ProviderInput' } } } }
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ProviderConfig' } } } } }
+  /settings/providers/{id}/test:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+    post:
+      summary: Live connection test (non-billable probe where possible)
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ConnectionTest' } } } } }
+  /settings/providers/{id}/rotate:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+    post:
+      summary: Dual-key rotation (zero-downtime). Adds the new key as a second active credential, verifies it, then retires the old. See SECURITY.md B2a.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [new_api_key], properties: { new_api_key: { type: string, description: "plaintext, write-only" } } } } } }
+      responses: { '200': { description: Rotated, content: { application/json: { schema: { $ref: '#/components/schemas/ProviderConfig' } } } } }
+  /settings/providers/{id}:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+    delete:
+      summary: Remove a provider (and its credential)
+      responses: { '204': { description: Deleted } }
+
+  /settings/channels:
+    get:
+      summary: Telegram/WhatsApp configs + live status
+      responses: { '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ChannelConfig' } } } } } }
+  /settings/channels/{channel}:
+    parameters: [{ name: channel, in: path, required: true, schema: { type: string, enum: [telegram, whatsapp] } }]
+    put:
+      summary: Set token/session/allowed-ids; (re)registers the webhook
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ChannelInput' } } } }
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ChannelConfig' } } } } }
+  /settings/channels/{channel}/test:
+    parameters: [{ name: channel, in: path, required: true, schema: { type: string, enum: [telegram, whatsapp] } }]
+    post:
+      summary: Test channel connectivity
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ConnectionTest' } } } } }
+
+  /settings/integrations:
+    get:
+      summary: List integrations with status + last_sync
+      responses: { '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Integration' } } } } } }
+  /settings/integrations/{kind}/connect:
+    parameters: [{ name: kind, in: path, required: true, schema: { type: string, enum: [gmail, gcal, gdrive, n8n, s3] } }]
+    post:
+      summary: Start OAuth (returns auth_url) or save webhook/creds
+      requestBody: { content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+      responses: { '200': { description: OK, content: { application/json: { schema: { type: object, properties: { auth_url: { type: string, nullable: true }, status: { type: string } } } } } } }
+  /settings/integrations/{kind}/disconnect:
+    parameters: [{ name: kind, in: path, required: true, schema: { type: string, enum: [gmail, gcal, gdrive, n8n, s3] } }]
+    post:
+      summary: Disconnect an integration
+      responses: { '204': { description: Disconnected } }
+  /settings/integrations/{kind}/callback:
+    parameters: [{ name: kind, in: path, required: true, schema: { type: string, enum: [gmail, gcal, gdrive, n8n, s3] } }]
+    get:
+      summary: OAuth redirect handler
+      responses: { '200': { description: Connected } }
+
+  /settings/models:
+    get:
+      summary: Ollama-installed models + configured cloud models
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ModelInventory' } } } } }
+  /settings/models/pull:
+    post:
+      summary: Pull an Ollama model (async job)
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [name], properties: { name: { type: string } } } } } }
+      responses: { '202': { description: Accepted, content: { application/json: { schema: { $ref: '#/components/schemas/AgentTask' } } } } }
+
+  /settings/usage:
+    get:
+      summary: Month-to-date cost by model_kind/model (from agent_tasks)
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/UsageReport' } } } } }
+
+  # ── Job board discovery (see docs/11-JOB-BOARDS.md) — official feeds only ──
+  /job-boards/sources:
+    get:
+      summary: List configured job-board sources + status
+      responses: { '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/JobBoardSource' } } } } } }
+    post:
+      summary: Add a source (board + filters + poll interval)
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/JobBoardSourceInput' } } } }
+      responses: { '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/JobBoardSource' } } } } }
+  /job-boards/sources/{id}:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+    patch:
+      summary: Enable/disable or edit filters
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/JobBoardSourceInput' } } } }
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/JobBoardSource' } } } } }
+    delete:
+      summary: Remove a source
+      responses: { '204': { description: Deleted } }
+  /job-boards/sources/{id}/poll:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+    post:
+      summary: Poll this source now (async job; new matches land as opportunities with source_channel=job_board)
+      responses: { '202': { description: Accepted, content: { application/json: { schema: { $ref: '#/components/schemas/AgentTask' } } } } }
+
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer }
+
+  responses:
+    NotFound:
+      description: Not found
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  schemas:
+    Error:
+      type: object
+      properties: { code: { type: string }, message: { type: string } }
+
+    SourceChannel: { type: string, enum: [telegram, whatsapp, web, manual, job_board] }
+    PipelineStage: { type: string, enum: [saved, applied, assessment, interview, final, offer, rejected, withdrawn] }
+    ContactRole:   { type: string, enum: [recruiter, hiring_manager, founder, referral, other] }
+    MessageChannel: { type: string, enum: [email, linkedin, telegram, whatsapp, other] }
+    MessageState:  { type: string, enum: [draft, approved, sent, replied, bounced, archived] }
+    VvpKind:       { type: string, enum: [audit, growth_strategy, automation, market_analysis, product_improvement, analytics_dashboard, other] }
+    VvpFormat:     { type: string, enum: [report, slides, prototype_spec] }
+    AgentStatus:   { type: string, enum: [queued, running, succeeded, failed, needs_approval, cancelled] }
+    ModelKind:     { type: string, enum: [local, cloud] }
+    WorkModel:     { type: string, enum: [remote, hybrid, onsite, unknown] }
+
+    Profile:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        master_resume: { type: object }
+        tone_prefs: { type: object }
+        updated_at: { type: string, format: date-time }
+    ProfileInput:
+      type: object
+      properties:
+        master_resume: { type: object }
+        tone_prefs: { type: object }
+
+    Achievement:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        summary: { type: string }
+        detail: { type: string }
+        skills: { type: array, items: { type: string } }
+        metrics: { type: object }
+    AchievementInput:
+      type: object
+      required: [summary]
+      properties:
+        summary: { type: string }
+        detail: { type: string }
+        skills: { type: array, items: { type: string } }
+        metrics: { type: object }
+
+    Company:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        domain: { type: string }
+        industry: { type: string }
+        hq_location: { type: string }
+        size_band: { type: string }
+    CompanyBrief:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        content: { type: object, description: "business_model, products, funding, competitors, leadership, news, culture, hiring_signals" }
+        sources: { type: array, items: { type: object, properties: { title: { type: string }, url: { type: string }, fetched_at: { type: string, format: date-time } } } }
+        fetched_at: { type: string, format: date-time }
+        is_stale: { type: boolean }
+    CompanyDetail:
+      allOf:
+        - $ref: '#/components/schemas/Company'
+        - type: object
+          properties:
+            latest_brief: { $ref: '#/components/schemas/CompanyBrief' }
+
+    Opportunity:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        company_id: { type: string, format: uuid }
+        role_title: { type: string }
+        seniority: { type: string }
+        location: { type: string }
+        work_model: { $ref: '#/components/schemas/WorkModel' }
+        salary_text: { type: string }
+        visa_signal: { type: string }
+        required_skills: { type: array, items: { type: string } }
+        nice_to_haves: { type: array, items: { type: string } }
+        source_url: { type: string }
+        apply_url: { type: string }
+        source_channel: { $ref: '#/components/schemas/SourceChannel' }
+        created_at: { type: string, format: date-time }
+    OpportunityDetail:
+      allOf:
+        - $ref: '#/components/schemas/Opportunity'
+        - type: object
+          properties:
+            company: { $ref: '#/components/schemas/Company' }
+            match: { $ref: '#/components/schemas/MatchScore' }
+            application: { $ref: '#/components/schemas/Application' }
+    OpportunityPage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Opportunity' } }
+        next_cursor: { type: string, nullable: true }
+
+    MatchScore:
+      type: object
+      properties:
+        score: { type: number, description: 0..100 }
+        missing_skills: { type: array, items: { type: string } }
+        rationale: { type: string }
+        computed_at: { type: string, format: date-time }
+
+    ResumeVersion:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        opportunity_id: { type: string, format: uuid }
+        label: { type: string }
+        content: { type: object }
+        pdf_url: { type: string, description: signed URL to the rendered PDF }
+        ats_score: { type: number }
+        validated: { type: boolean, description: passed the no-fabrication validator }
+        created_at: { type: string, format: date-time }
+
+    OutreachMessage:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        contact_id: { type: string, format: uuid }
+        opportunity_id: { type: string, format: uuid }
+        channel: { $ref: '#/components/schemas/MessageChannel' }
+        subject: { type: string }
+        body: { type: string }
+        state: { $ref: '#/components/schemas/MessageState' }
+        created_at: { type: string, format: date-time }
+
+    Application:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        opportunity_id: { type: string, format: uuid }
+        stage: { $ref: '#/components/schemas/PipelineStage' }
+        applied_at: { type: string, format: date-time, nullable: true }
+        notes: { type: string }
+        created_at: { type: string, format: date-time }
+
+    AgentTask:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        agent_name: { type: string }
+        status: { $ref: '#/components/schemas/AgentStatus' }
+        source_channel: { $ref: '#/components/schemas/SourceChannel' }
+        related_type: { type: string, nullable: true }
+        related_id: { type: string, format: uuid, nullable: true }
+        output: { type: object, nullable: true }
+        tools_used: { type: array, items: { type: string } }
+        model_kind: { $ref: '#/components/schemas/ModelKind' }
+        model_name: { type: string }
+        cost_usd: { type: number }
+        error: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time, nullable: true }
+
+    # ── Settings schemas (see docs/10-SETTINGS.md) ──
+    Settings:
+      type: object
+      properties:
+        routing:
+          type: object
+          properties:
+            model_tier: { type: string, enum: [A, B, C, VPS] }
+            cloud_fallback: { type: boolean }
+            per_task: { type: object, additionalProperties: { type: string, enum: [local, cloud] } }
+            cost_cap_usd: { type: number }
+        inference:
+          type: object
+          properties:
+            ollama_base_url: { type: string }
+            embedding_model: { type: string }
+        search:
+          type: object
+          properties:
+            provider: { type: string, enum: [searxng, tavily] }
+            searxng_url: { type: string }
+        preferences:
+          type: object
+          properties:
+            tone: { type: string, enum: [formal, warm, direct] }
+            theme: { type: string, enum: [light, dark] }
+            followup_cadence: { type: array, items: { type: integer }, description: "days, e.g. [3,7,14]" }
+            currency: { type: string, example: NGN }
+            timezone: { type: string, example: Africa/Lagos }
+        privacy:
+          type: object
+          properties:
+            block_cloud_personal_data: { type: boolean }
+    SettingsInput:
+      allOf: [{ $ref: '#/components/schemas/Settings' }]
+
+    ProviderConfig:
+      type: object
+      description: API keys are masked — last4 only, never plaintext.
+      properties:
+        id: { type: string, format: uuid }
+        provider: { type: string, enum: [openrouter, anthropic, openai, ollama] }
+        base_url: { type: string }
+        default_model: { type: string }
+        enabled: { type: boolean }
+        key_last4: { type: string, nullable: true }
+        status: { type: string, enum: [connected, disconnected, error] }
+    ProviderInput:
+      type: object
+      required: [provider]
+      properties:
+        provider: { type: string, enum: [openrouter, anthropic, openai, ollama] }
+        base_url: { type: string }
+        default_model: { type: string }
+        api_key: { type: string, description: "plaintext, write-only — encrypted at rest, never returned" }
+        enabled: { type: boolean }
+
+    ChannelConfig:
+      type: object
+      properties:
+        channel: { type: string, enum: [telegram, whatsapp] }
+        enabled: { type: boolean }
+        status: { type: string, enum: [connected, disconnected, error] }
+        config: { type: object, description: "{allowed_user_ids, session, base_url, webhook_url} — secrets masked" }
+        last_checked_at: { type: string, format: date-time, nullable: true }
+    ChannelInput:
+      type: object
+      properties:
+        token: { type: string, description: "write-only (Telegram bot token / OpenWA api key)" }
+        allowed_user_ids: { type: array, items: { type: string } }
+        base_url: { type: string }
+        session: { type: string }
+        enabled: { type: boolean }
+
+    Integration:
+      type: object
+      properties:
+        kind: { type: string, enum: [gmail, gcal, gdrive, n8n, s3] }
+        status: { type: string, enum: [connected, disconnected, error] }
+        config: { type: object }
+        last_sync_at: { type: string, format: date-time, nullable: true }
+
+    ConnectionTest:
+      type: object
+      properties:
+        ok: { type: boolean }
+        latency_ms: { type: integer, nullable: true }
+        detail: { type: string, nullable: true }
+        models: { type: array, items: { type: string }, nullable: true }
+
+    ModelInventory:
+      type: object
+      properties:
+        ollama_models: { type: array, items: { type: string } }
+        cloud_models: { type: array, items: { type: string } }
+        embedding_model: { type: string }
+
+    UsageReport:
+      type: object
+      properties:
+        month: { type: string, example: "2026-06" }
+        total_usd: { type: number }
+        by_model:
+          type: array
+          items:
+            type: object
+            properties:
+              model_kind: { $ref: '#/components/schemas/ModelKind' }
+              model_name: { type: string }
+              cost_usd: { type: number }
+              task_count: { type: integer }
+        cost_cap_usd: { type: number, nullable: true }
+
+    # ── Job board schemas (see docs/11-JOB-BOARDS.md) ──
+    JobBoardSource:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        board: { type: string, enum: [remotive, remoteok, weworkremotely] }
+        enabled: { type: boolean }
+        filters:
+          type: object
+          properties:
+            category: { type: string }
+            keywords: { type: array, items: { type: string } }
+            min_salary: { type: integer }
+            regions: { type: array, items: { type: string } }
+        poll_interval_minutes: { type: integer }
+        last_polled_at: { type: string, format: date-time, nullable: true }
+    JobBoardSourceInput:
+      type: object
+      required: [board]
+      properties:
+        board: { type: string, enum: [remotive, remoteok, weworkremotely] }
+        enabled: { type: boolean }
+        filters:
+          type: object
+          properties:
+            category: { type: string }
+            keywords: { type: array, items: { type: string } }
+            min_salary: { type: integer }
+            regions: { type: array, items: { type: string } }
+        poll_interval_minutes: { type: integer, default: 360 }
