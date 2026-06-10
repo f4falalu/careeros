@@ -179,13 +179,117 @@ export async function handleMenuAction(input: MenuActionInput): Promise<MenuActi
           break
         }
 
-        case 'build_vvp':
-          messages.push('VVP coming in Phase 2!')
+        case 'build_vvp': {
+          const [task] = await db
+            .insert(schema.agentTasks)
+            .values({
+              userId: user.id,
+              agentName: 'vvp_propose',
+              status: 'queued',
+              sourceChannel: input.sourceChannel,
+              relatedType: 'opportunity',
+              relatedId: input.opportunityId,
+              input: { opportunityId: input.opportunityId },
+            })
+            .returning()
+          await enqueueAgent('vvp_propose', {
+            taskId: task.id,
+            userId: user.id,
+            opportunityId: input.opportunityId,
+          })
+          taskIds.push(task.id)
+          messages.push('Proposing VVP angles...')
           break
+        }
 
-        case 'draft_outreach':
-          messages.push('Outreach drafting coming in Phase 2!')
+        case 'draft_outreach': {
+          const [task] = await db
+            .insert(schema.agentTasks)
+            .values({
+              userId: user.id,
+              agentName: 'outreach',
+              status: 'queued',
+              sourceChannel: input.sourceChannel,
+              relatedType: 'opportunity',
+              relatedId: input.opportunityId,
+              input: { opportunityId: input.opportunityId },
+            })
+            .returning()
+          await enqueueAgent('outreach', {
+            taskId: task.id,
+            userId: user.id,
+            opportunityId: input.opportunityId,
+          })
+          taskIds.push(task.id)
+          messages.push('Drafting outreach message...')
           break
+        }
+
+        case 'auto_apply': {
+          // Phase 4 (gated). The apply agent re-checks Settings → Autonomy and
+          // will refuse / park for confirmation as configured.
+          const [task] = await db
+            .insert(schema.agentTasks)
+            .values({
+              userId: user.id,
+              agentName: 'apply',
+              status: 'queued',
+              sourceChannel: input.sourceChannel,
+              relatedType: 'opportunity',
+              relatedId: input.opportunityId,
+              input: { opportunityId: input.opportunityId },
+            })
+            .returning()
+          await enqueueAgent('apply', {
+            taskId: task.id,
+            userId: user.id,
+            opportunityId: input.opportunityId,
+          })
+          taskIds.push(task.id)
+          messages.push('Submitting auto-apply (subject to your autonomy settings)...')
+          break
+        }
+
+        case 'prep_interview': {
+          // Requires an existing application; find or create one
+          const existingApps = await db
+            .select()
+            .from(schema.applications)
+            .where(eq(schema.applications.opportunityId, input.opportunityId))
+            .limit(1)
+
+          let applicationId: string
+          if (existingApps.length > 0) {
+            applicationId = existingApps[0].id
+          } else {
+            const [newApp] = await db
+              .insert(schema.applications)
+              .values({ userId: user.id, opportunityId: input.opportunityId, stage: 'saved' })
+              .returning()
+            applicationId = newApp.id
+          }
+
+          const [task] = await db
+            .insert(schema.agentTasks)
+            .values({
+              userId: user.id,
+              agentName: 'interview_brief',
+              status: 'queued',
+              sourceChannel: input.sourceChannel,
+              relatedType: 'application',
+              relatedId: applicationId,
+              input: { applicationId },
+            })
+            .returning()
+          await enqueueAgent('interview_brief', {
+            taskId: task.id,
+            userId: user.id,
+            applicationId,
+          })
+          taskIds.push(task.id)
+          messages.push('Generating interview brief...')
+          break
+        }
 
         default:
           console.warn('[orchestrator] Unknown menu action:', action)
@@ -228,6 +332,7 @@ export function notifyIntakeComplete(params: {
     '3 Draft outreach',
     '4 Cover letter',
     '5 Mark applied',
+    '6 Prep interview',
   ].join('  |  ')
 
   return `${headline}${missingLine}\n\n${menu}`

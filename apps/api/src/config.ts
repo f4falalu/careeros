@@ -1,4 +1,6 @@
 // Boot config from env (see docs/03-RESOURCES.md). Runtime settings live in the DB (docs/10-SETTINGS.md).
+import { config as dotenvConfig } from 'dotenv'
+dotenvConfig()
 
 export const config = {
   appEnv: process.env.APP_ENV ?? "dev",

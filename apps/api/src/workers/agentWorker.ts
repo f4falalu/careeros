@@ -4,6 +4,7 @@ import { config } from '../config.js'
 import { db, schema } from '../db/index.js'
 import { eq } from 'drizzle-orm'
 import Redis from 'ioredis'
+import { serializeAgentTask } from '../lib/serialize.js'
 
 // ── Redis pub/sub helper ──────────────────────────────────────────────────────
 
@@ -57,7 +58,7 @@ async function updateTask(
 
   const [task] = rows
   if (task) {
-    await publishTaskUpdate(task as unknown as Record<string, unknown>)
+    await publishTaskUpdate(serializeAgentTask(task))
   }
 }
 
@@ -147,8 +148,118 @@ export function startAgentWorker() {
             break
           }
 
+          case 'vvp_propose': {
+            const { runVvpProposeAgent } = await import('../agents/vvp.js')
+            result = await runVvpProposeAgent(
+              jobData as { taskId: string; userId: string; opportunityId: string },
+            )
+            break
+          }
+
+          case 'vvp_generate': {
+            const { runVvpGenerateAgent } = await import('../agents/vvp.js')
+            result = await runVvpGenerateAgent(
+              jobData as { taskId: string; userId: string; vvpId: string; angleIndex: number },
+            )
+            break
+          }
+
+          case 'outreach': {
+            const { runOutreachAgent } = await import('../agents/outreach.js')
+            result = await runOutreachAgent(
+              jobData as {
+                taskId: string
+                userId: string
+                opportunityId: string
+                contactRole?: string
+                channel?: string
+                contactId?: string
+              },
+            )
+            break
+          }
+
+          case 'interview_brief': {
+            const { runInterviewBriefAgent } = await import('../agents/interview.js')
+            result = await runInterviewBriefAgent(
+              jobData as { taskId: string; userId: string; applicationId: string },
+            )
+            break
+          }
+
+          case 'mock_session': {
+            const { runMockSessionAgent } = await import('../agents/interview.js')
+            result = await runMockSessionAgent(
+              jobData as {
+                taskId: string
+                userId: string
+                interviewId: string
+                question: string
+                sessionId?: string
+              },
+            )
+            break
+          }
+
+          case 'followup': {
+            const { runFollowupAgent } = await import('../agents/followup.js')
+            result = await runFollowupAgent(
+              jobData as { taskId: string; userId: string; outreachId: string },
+            )
+            break
+          }
+
+          case 'strategist': {
+            const { runStrategistAgent } = await import('../agents/strategist.js')
+            result = await runStrategistAgent(
+              jobData as { taskId: string; userId: string },
+            )
+            break
+          }
+
+          case 'apply': {
+            const { runApplyAgent } = await import('../agents/apply.js')
+            result = await runApplyAgent(
+              jobData as {
+                taskId: string
+                userId: string
+                opportunityId: string
+                approved?: boolean
+              },
+            )
+            break
+          }
+
+          case 'enrich': {
+            const { runEnrichAgent } = await import('../agents/enrich.js')
+            result = await runEnrichAgent(
+              jobData as { taskId: string; userId: string; contactId: string },
+            )
+            break
+          }
+
+          case 'scrape': {
+            const { runScrapeAgent } = await import('../agents/scrape.js')
+            result = await runScrapeAgent(
+              jobData as { taskId: string; userId: string; url: string },
+            )
+            break
+          }
+
           default:
             throw new Error(`Unknown job name: ${job.name}`)
+        }
+
+        // Autonomy gate: an agent can park itself for human confirmation by
+        // returning needsApproval. The task waits in `needs_approval` until the
+        // owner approves it via POST /tasks/:id/approve (which re-enqueues it).
+        if (result.needsApproval === true) {
+          await updateTask(taskId, {
+            status: 'needs_approval',
+            output: result,
+            finishedAt: new Date(),
+          })
+          return result
         }
 
         await updateTask(taskId, {

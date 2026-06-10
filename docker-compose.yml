@@ -43,11 +43,25 @@ services:
       - /app/node_modules       # don't clobber container-installed deps
     command: npm run dev
 
+  searxng:
+    image: searxng/searxng:latest
+    ports: ["8888:8080"]
+    volumes:
+      - ./config/searxng:/etc/searxng:rw
+    environment:
+      SEARXNG_SECRET_KEY: "change-this-in-production"
+    restart: unless-stopped
+
   web:
-    image: node:20-alpine
-    working_dir: /app
+    build: ./apps/web
     depends_on: [api]
     ports: ["3000:3000"]
-    volumes: ["./apps/web:/app"]
-    # Phase 0 web is a placeholder; Next.js (Lovable/Claude Code) fills apps/web in Phase 1.
-    command: sh -c "echo 'web placeholder — scaffold the Next.js app here in Phase 1' && tail -f /dev/null"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_WS_URL: ws://localhost:8000
+      NEXT_PUBLIC_APP_SECRET: ${APP_SECRET}
+    volumes:
+      - ./apps/web:/app
+      - /app/node_modules
+      - /app/.next
+    command: npm run dev

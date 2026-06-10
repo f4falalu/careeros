@@ -88,7 +88,7 @@ CREATE TABLE company_briefs (
     sources         JSONB NOT NULL DEFAULT '[]'::jsonb,  -- [{title,url,fetched_at}]
     embedding       vector(768),
     fetched_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    is_stale        BOOLEAN GENERATED ALWAYS AS (fetched_at < now() - INTERVAL '30 days') STORED
+    is_stale        BOOLEAN NOT NULL DEFAULT false
 );
 
 -- ─────────────────────────────────────────────────────────────

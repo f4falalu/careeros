@@ -10,6 +10,7 @@ const app = new Hono()
 app.get('/', async (c) => {
   const userId = c.get('userId')
   const stageParam = c.req.query('stage')
+  const sourceParam = c.req.query('source')
   const limitParam = parseInt(c.req.query('limit') ?? '50', 10)
   const cursor = c.req.query('cursor') // ISO date string for cursor pagination
 
@@ -52,6 +53,9 @@ app.get('/', async (c) => {
     const conditions = [eq(schema.opportunities.userId, userId)]
     if (cursor) {
       conditions.push(lt(schema.opportunities.createdAt, new Date(cursor)))
+    }
+    if (sourceParam) {
+      conditions.push(eq(schema.opportunities.sourceChannel, sourceParam as 'job_board'))
     }
     rows = await db
       .select()
@@ -115,6 +119,64 @@ app.get('/:id', async (c) => {
     match: match ?? null,
     application: application ?? null,
   })
+})
+
+// ── GET /opportunities/:id/resume-versions ────────────────────
+app.get('/:id/resume-versions', async (c) => {
+  const userId = c.get('userId')
+  const { id } = c.req.param()
+
+  const [opportunity] = await db
+    .select({ id: schema.opportunities.id })
+    .from(schema.opportunities)
+    .where(and(eq(schema.opportunities.id, id), eq(schema.opportunities.userId, userId)))
+    .limit(1)
+
+  if (!opportunity) {
+    return c.json({ code: 'not_found', message: 'Opportunity not found' }, 404)
+  }
+
+  const versions = await db
+    .select()
+    .from(schema.resumeVersions)
+    .where(
+      and(
+        eq(schema.resumeVersions.opportunityId, id),
+        eq(schema.resumeVersions.userId, userId),
+      ),
+    )
+    .orderBy(desc(schema.resumeVersions.createdAt))
+
+  return c.json(versions)
+})
+
+// ── GET /opportunities/:id/cover-letters ─────────────────────
+app.get('/:id/cover-letters', async (c) => {
+  const userId = c.get('userId')
+  const { id } = c.req.param()
+
+  const [opportunity] = await db
+    .select({ id: schema.opportunities.id })
+    .from(schema.opportunities)
+    .where(and(eq(schema.opportunities.id, id), eq(schema.opportunities.userId, userId)))
+    .limit(1)
+
+  if (!opportunity) {
+    return c.json({ code: 'not_found', message: 'Opportunity not found' }, 404)
+  }
+
+  const letters = await db
+    .select()
+    .from(schema.coverLetters)
+    .where(
+      and(
+        eq(schema.coverLetters.opportunityId, id),
+        eq(schema.coverLetters.userId, userId),
+      ),
+    )
+    .orderBy(desc(schema.coverLetters.createdAt))
+
+  return c.json(letters)
 })
 
 // ── POST /opportunities/:id/match ─────────────────────────────

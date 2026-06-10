@@ -1,0 +1,20 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1781029610360,
+      "tag": "0000_blue_nebula",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1781043846947,
+      "tag": "0001_autonomy_and_auth_foundation",
+      "breakpoints": true
+    }
+  ]
+}

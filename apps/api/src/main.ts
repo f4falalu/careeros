@@ -1,6 +1,7 @@
 // CareerOS API — Phase 1. DB layer, REST routes, auth middleware, WebSocket hub.
 import { createServer } from 'http'
 import { Hono } from 'hono'
+import { cors } from 'hono/cors'
 import postgres from 'postgres'
 import Redis from 'ioredis'
 import { config, DEFAULT_LOCAL_MODEL } from './config.js'
@@ -17,10 +18,28 @@ import { tasksRoutes } from './routes/tasks.js'
 import { actionsRoutes } from './routes/actions.js'
 import { intakeRoutes } from './routes/intake.js'
 import { settingsRoutes } from './routes/settings.js'
+import { vvpRoutes } from './routes/vvp.js'
+import { outreachRoutes } from './routes/outreach.js'
+import { contactsRoutes } from './routes/contacts.js'
 import { startTelegramBot } from './channels/telegram.js'
 import { startAgentWorker } from './workers/agentWorker.js'
+import { startDiscoveryWorker } from './workers/discoveryWorker.js'
+import { jobBoardsRoutes } from './routes/jobBoards.js'
+import { interviewsRoutes } from './routes/interviews.js'
+import { followupsRoutes } from './routes/followups.js'
+import { strategistRoutes } from './routes/strategist.js'
+import { autonomyRoutes } from './routes/autonomy.js'
+import { authRoutes } from './routes/auth.js'
 
 const app = new Hono()
+
+// ── CORS — allow the local Next.js dev server ─────────────────
+app.use('*', cors({
+  origin: ['http://localhost:3000', 'http://127.0.0.1:3000'],
+  allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
+}))
 
 // ── Public routes ─────────────────────────────────────────────
 app.get('/health', async (c) => {
@@ -90,6 +109,12 @@ app.use('/actions/*', authMiddleware)
 app.use('/intake/*', authMiddleware)
 app.use('/settings/*', authMiddleware)
 app.use('/outreach/*', authMiddleware)
+app.use('/vvps/*', authMiddleware)
+app.use('/contacts/*', authMiddleware)
+app.use('/job-boards/*', authMiddleware)
+app.use('/interviews/*', authMiddleware)
+app.use('/followups/*', authMiddleware)
+app.use('/strategist/*', authMiddleware)
 
 // ── Mount route handlers ──────────────────────────────────────
 app.route('/profile', profileRoutes)
@@ -104,13 +129,19 @@ app.route('/actions', actionsRoutes)
 app.route('/intake', intakeRoutes)
 app.route('/settings', settingsRoutes)
 
-// ── Outreach stubs (Phase 2) ──────────────────────────────────
-app.post('/outreach', async (c) => {
-  return c.json({ code: 'not_implemented', message: 'Outreach agent available in Phase 2' }, 501)
-})
-app.post('/outreach/:id/approve', async (c) => {
-  return c.json({ code: 'not_implemented', message: 'Outreach approve available in Phase 2' }, 501)
-})
+app.route('/outreach', outreachRoutes)
+app.route('/contacts', contactsRoutes)
+app.route('/job-boards', jobBoardsRoutes)
+// VVP routes: /vvps/* and /opportunities/:id/vvp/* are co-mounted at root
+app.route('/', vvpRoutes)
+// Phase 3 routes: interviews at /, followups at /outreach (extension), strategist at /strategist
+app.route('/', interviewsRoutes)
+app.route('/', followupsRoutes)
+app.route('/strategist', strategistRoutes)
+// Phase 4 autonomy triggers: /opportunities/:id/apply, /contacts/:id/enrich, /job-boards/scrape
+app.route('/', autonomyRoutes)
+// Phase 5 (foundation) auth scaffold — public (register/login) + session-guarded (me/logout)
+app.route('/auth', authRoutes)
 
 // ── Create Node HTTP server + attach WebSocket hub ────────────
 const port = 8000
@@ -163,5 +194,6 @@ server.listen(port, () => {
 
   // Start async workers (after server is bound so port is confirmed open)
   startAgentWorker()
+  startDiscoveryWorker()
   startTelegramBot().catch((err) => console.error('[telegram] failed to start:', err))
 })

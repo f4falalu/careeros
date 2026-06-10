@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { and, eq, desc } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { enqueueAgent } from '../workers/queue.js'
+import { serializeAgentTask } from '../lib/serialize.js'
 
 const app = new Hono()
 
@@ -33,7 +34,7 @@ app.get('/', async (c) => {
     .orderBy(desc(schema.agentTasks.createdAt))
     .limit(limit)
 
-  return c.json(rows)
+  return c.json(rows.map(serializeAgentTask))
 })
 
 // ── GET /tasks/:id ────────────────────────────────────────────
@@ -51,7 +52,7 @@ app.get('/:id', async (c) => {
     return c.json({ code: 'not_found', message: 'Task not found' }, 404)
   }
 
-  return c.json(task)
+  return c.json(serializeAgentTask(task))
 })
 
 // ── POST /tasks/:id/approve ───────────────────────────────────
@@ -91,7 +92,7 @@ app.post('/:id/approve', async (c) => {
     approved: true,
   })
 
-  return c.json(updated)
+  return c.json(serializeAgentTask(updated))
 })
 
 export { app as tasksRoutes }

@@ -155,39 +155,37 @@ app.post('/', async (c) => {
       }
 
       case 'build_vvp': {
-        // Phase 2 stub — create a "failed" placeholder task with descriptive error
         const [task] = await db
           .insert(schema.agentTasks)
           .values({
             userId,
-            agentName: 'vvp',
-            status: 'failed',
+            agentName: 'vvp_propose',
+            status: 'queued',
             sourceChannel,
             relatedType: 'opportunity',
             relatedId: opportunityId,
             input: { opportunityId },
-            error: 'VVP generation not yet implemented (Phase 2)',
           })
           .returning()
+        await enqueueAgent('vvp_propose', { taskId: task.id, userId, opportunityId })
         results.push(task)
         break
       }
 
       case 'draft_outreach': {
-        // Phase 2 stub
         const [task] = await db
           .insert(schema.agentTasks)
           .values({
             userId,
             agentName: 'outreach',
-            status: 'failed',
+            status: 'queued',
             sourceChannel,
             relatedType: 'opportunity',
             relatedId: opportunityId,
             input: { opportunityId },
-            error: 'Outreach drafting not yet implemented (Phase 2)',
           })
           .returning()
+        await enqueueAgent('outreach', { taskId: task.id, userId, opportunityId })
         results.push(task)
         break
       }

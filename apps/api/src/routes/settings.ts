@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { eq, and } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
+import { normalizeAutonomy } from '../agents/lib/autonomy.js'
 
 const app = new Hono()
 
@@ -38,6 +39,9 @@ const SettingsInputSchema = z.object({
   search: z.record(z.unknown()).optional(),
   preferences: z.record(z.unknown()).optional(),
   privacy: z.record(z.unknown()).optional(),
+  // Phase 4 autonomy control plane. Validated/normalized against AutonomySchema
+  // so a malformed blob can never silently widen what an agent is allowed to do.
+  autonomy: z.record(z.unknown()).optional(),
 })
 
 app.patch('/', async (c) => {
@@ -63,6 +67,8 @@ app.patch('/', async (c) => {
   if (body.search !== undefined) updateValues.search = body.search
   if (body.preferences !== undefined) updateValues.preferences = body.preferences
   if (body.privacy !== undefined) updateValues.privacy = body.privacy
+  // Normalize through AutonomySchema before persisting — clamps/defaults every field.
+  if (body.autonomy !== undefined) updateValues.autonomy = normalizeAutonomy(body.autonomy)
 
   let result
   if (existing.length > 0) {
@@ -81,6 +87,7 @@ app.patch('/', async (c) => {
         search: body.search ?? {},
         preferences: body.preferences ?? {},
         privacy: body.privacy ?? {},
+        autonomy: body.autonomy !== undefined ? normalizeAutonomy(body.autonomy) : {},
       })
       .returning()
   }

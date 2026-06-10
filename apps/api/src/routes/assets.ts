@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { and, eq } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { enqueueAgent } from '../workers/queue.js'
+import { renderResumePdf } from '../lib/pdf.js'
 
 const app = new Hono()
 
@@ -119,6 +120,42 @@ app.get('/resumes/:id', async (c) => {
     ...resume,
     // pdf_url would be a signed URL in Phase 2; for now return raw path
     pdf_url: resume.pdfPath ?? null,
+  })
+})
+
+// ── GET /resume-versions/:id/pdf ─────────────────────────────
+app.get('/resume-versions/:id/pdf', async (c) => {
+  const userId = c.get('userId')
+  const { id } = c.req.param()
+
+  const [resume] = await db
+    .select()
+    .from(schema.resumeVersions)
+    .where(and(eq(schema.resumeVersions.id, id), eq(schema.resumeVersions.userId, userId)))
+    .limit(1)
+
+  if (!resume) {
+    return c.json({ code: 'not_found', message: 'Resume not found' }, 404)
+  }
+
+  let pdfBytes: Buffer
+  try {
+    pdfBytes = await renderResumePdf(
+      resume.content as Record<string, unknown>,
+      resume.label,
+    )
+  } catch (err) {
+    console.error('[pdf] render failed:', err)
+    return c.json({ code: 'pdf_error', message: 'PDF generation failed' }, 500)
+  }
+
+  const filename = `${resume.label.replace(/[^a-z0-9_-]/gi, '_')}.pdf`
+  return new Response(pdfBytes, {
+    headers: {
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Content-Length': String(pdfBytes.length),
+    },
   })
 })
 

@@ -116,8 +116,28 @@ export const users = pgTable('users', {
   displayName: text('display_name'),
   telegramUserId: text('telegram_user_id'),
   whatsappNumber: text('whatsapp_number'),
+  // Phase 5 (foundation): real-auth scaffold. Nullable so the v1 single-owner
+  // (bearer-token) user keeps working with no password set. The login flow
+  // itself is intentionally minimal and flagged for human security review (SECURITY.md B3).
+  passwordHash: text('password_hash'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 })
+
+// Phase 5 (foundation): session tokens for real auth. Only the SHA-256 hash of
+// the opaque token is stored — never the token itself.
+export const sessions = pgTable(
+  'sessions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('sessions_token_hash').on(t.tokenHash)],
+)
 
 export const profiles = pgTable('profiles', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -185,10 +205,7 @@ export const companyBriefs = pgTable('company_briefs', {
   sources: jsonb('sources').notNull().default([]),
   embedding: vector('embedding'),
   fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
-  isStale: boolean('is_stale').generatedAlwaysAs(
-    sql`fetched_at < now() - INTERVAL '30 days'`,
-    { mode: 'stored' },
-  ),
+  isStale: boolean('is_stale').notNull().default(false),
 })
 
 // ─────────────────────────────────────────────────────────────
@@ -242,6 +259,9 @@ export const applications = pgTable(
       .references(() => opportunities.id, { onDelete: 'cascade' }),
     stage: pipelineStageEnum('stage').notNull().default('saved'),
     appliedAt: timestamp('applied_at', { withTimezone: true }),
+    // Phase 4 (autonomy): true when the Apply agent submitted this application.
+    // Used for the per-day auto-apply cap and for audit/UI distinction.
+    autoApplied: boolean('auto_applied').notNull().default(false),
     notes: text('notes'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -513,6 +533,10 @@ export const appSettings = pgTable('app_settings', {
   search: jsonb('search').notNull().default({}),
   preferences: jsonb('preferences').notNull().default({}),
   privacy: jsonb('privacy').notNull().default({}),
+  // Phase 4 (autonomy): per-action control plane for the risky agents
+  // (auto-apply, scraping, CRM enrichment). Empty = all off / safe defaults.
+  // Shape is defined + defaulted in agents/lib/autonomy.ts.
+  autonomy: jsonb('autonomy').notNull().default({}),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
 
@@ -610,6 +634,9 @@ export const agentTasksRelations = relations(agentTasks, ({ one }) => ({
 // ─────────────────────────────────────────────────────────────
 export type User = typeof users.$inferSelect
 export type NewUser = typeof users.$inferInsert
+
+export type Session = typeof sessions.$inferSelect
+export type NewSession = typeof sessions.$inferInsert
 
 export type Profile = typeof profiles.$inferSelect
 export type NewProfile = typeof profiles.$inferInsert

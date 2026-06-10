@@ -14,23 +14,57 @@ function isPrivateUrl(url: string): boolean {
   }
 }
 
-export async function webFetch(url: string): Promise<{ text: string; ok: boolean }> {
-  if (isPrivateUrl(url)) throw new Error(`SSRF blocked: ${url}`)
-  const res = await fetch(url, {
-    signal: AbortSignal.timeout(15_000),
-    headers: { 'User-Agent': 'CareerOS/1.0 (career research bot)' },
-  })
-  if (!res.ok) return { text: '', ok: false }
-  const html = await res.text()
-  // Basic HTML → text strip
-  const text = html
+function stripHtml(html: string): string {
+  return html
     .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s{2,}/g, ' ')
     .trim()
     .slice(0, 12_000)
-  return { text, ok: true }
+}
+
+export async function webFetch(url: string): Promise<{ text: string; ok: boolean }> {
+  if (isPrivateUrl(url)) throw new Error(`SSRF blocked: ${url}`)
+
+  // First: plain fetch (fast, works for static HTML job boards)
+  try {
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(15_000),
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; CareerOS/1.0)' },
+    })
+    if (res.ok) {
+      const html = await res.text()
+      const text = stripHtml(html)
+      // If we got meaningful content, return it
+      if (text.length >= 200) return { text, ok: true }
+    }
+  } catch {
+    // Network error or timeout — fall through to Playwright
+  }
+
+  // Fallback: Playwright-rendered fetch for SPA job boards (Ashby, Lever, Greenhouse, etc.)
+  const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ?? undefined
+  try {
+    const { chromium } = await import('playwright')
+    const browser = await chromium.launch({
+      executablePath,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+    })
+    try {
+      const page = await browser.newPage()
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20_000 })
+      // Wait briefly for dynamic content to render
+      await page.waitForTimeout(1500)
+      const html = await page.content()
+      const text = stripHtml(html)
+      return { text: text.slice(0, 12_000), ok: text.length >= 50 }
+    } finally {
+      await browser.close()
+    }
+  } catch (err) {
+    return { text: '', ok: false }
+  }
 }
 
 export async function search(

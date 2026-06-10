@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  --color-bg: #F7F7F6;
+  --color-surface: #FFFFFF;
+  --color-surface-sunken: #F2F2F1;
+  --color-border: #E8E8E8;
+  --color-text: #111111;
+  --color-muted: #6B7280;
+  --color-faint: #9CA3AF;
+}
+
+[data-theme="dark"] {
+  --color-bg: #0A0A0A;
+  --color-surface: #121212;
+  --color-surface-sunken: #1B1B1B;
+  --color-border: #252525;
+  --color-text: #F5F5F5;
+  --color-muted: #9CA3AF;
+  --color-faint: #6B7280;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: Inter, 'SF Pro Display', system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Tabular nums for all metric displays */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Status pill variants */
+.pill-queued    { background: #F3F4F6; color: #6B7280; }
+.pill-running   { background: #EFF6FF; color: #3B82F6; }
+.pill-succeeded { background: #ECFDF5; color: #10B981; }
+.pill-failed    { background: #FEF2F2; color: #EF4444; }
+.pill-needs_approval { background: #FFFBEB; color: #F59E0B; }
+.pill-cancelled { background: #F3F4F6; color: #9CA3AF; }
+
+/* Pipeline stage pills */
+.stage-saved       { background: #F3F4F6; color: #374151; }
+.stage-applied     { background: #EFF6FF; color: #1D4ED8; }
+.stage-assessment  { background: #F5F3FF; color: #6D28D9; }
+.stage-interview   { background: #FFF7ED; color: #C2410C; }
+.stage-final       { background: #FFFBEB; color: #92400E; }
+.stage-offer       { background: #ECFDF5; color: #065F46; }
+.stage-rejected    { background: #FEF2F2; color: #991B1B; }
+.stage-withdrawn   { background: #F3F4F6; color: #6B7280; }
+
+/* Hover lift */
+.hover-lift {
+  transition: transform 150ms cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.hover-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+}
