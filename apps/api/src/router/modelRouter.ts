@@ -51,6 +51,18 @@ function cloudHandle(modelName: string) {
   return provider(modelName)
 }
 
+// Resilience failover: when the local (Ollama) path errors, fall through to cloud —
+// but only when cloud is a *permitted* path. Privacy is binding (CLAUDE.md §1/§6):
+// personal data forced local never leaks to cloud, even on failure.
+function canFailoverToCloud(opts: { containsPersonalData?: boolean }): boolean {
+  if (opts.containsPersonalData && config.blockCloudPersonalData) return false
+  return config.cloudFallbackEnabled && Boolean(config.groqApiKey)
+}
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
 // ─────────────────────────────────────────────────────────────
 // Local Ollama: streaming native API
 // Uses /api/generate with stream:true so response headers arrive instantly,
@@ -111,8 +123,15 @@ export async function complete(
   )
 
   if (route.modelKind === 'local') {
-    const text = await ollamaGenerate(prompt, route.modelName)
-    return { text, modelKind: route.modelKind, modelName: route.modelName, reason: route.reason }
+    try {
+      const text = await ollamaGenerate(prompt, route.modelName)
+      return { text, modelKind: route.modelKind, modelName: route.modelName, reason: route.reason }
+    } catch (err) {
+      if (!canFailoverToCloud(opts)) throw err
+      const modelName = cloudModel()
+      const { text } = await (await import('ai')).generateText({ model: cloudHandle(modelName), prompt })
+      return { text, modelKind: 'cloud', modelName, reason: `failover: local failed (${errMsg(err)})` }
+    }
   }
 
   const { text } = await (await import('ai')).generateText({
@@ -141,7 +160,25 @@ export async function generateStructured<T>(
     return { data: object, modelKind: route.modelKind, modelName: route.modelName, reason: route.reason }
   }
 
-  // Local: stream text, parse JSON, validate against Zod schema.
+  // Local first; fall through to cloud structured output if local errors AND cloud is permitted.
+  try {
+    return await localStructured(prompt, schema, route)
+  } catch (err) {
+    if (!canFailoverToCloud(opts)) throw err
+    const modelName = cloudModel()
+    const { object } = await generateObject({ model: cloudHandle(modelName), prompt, schema })
+    return { data: object, modelKind: 'cloud', modelName, reason: `failover: local failed (${errMsg(err)})` }
+  }
+}
+
+// Local structured generation: stream text via Ollama, parse JSON, validate against
+// the Zod schema (+ 1 retry on schema fail). Throws on unrecoverable failure so the
+// caller can decide whether to fail over to cloud.
+async function localStructured<T>(
+  prompt: string,
+  schema: z.ZodType<T>,
+  route: RouteDecision,
+): Promise<{ data: T; modelKind: ModelKind; modelName: string; reason: string }> {
   const systemHint = `Respond with a single valid JSON object and NOTHING else — no markdown fences, no prose, no explanation.`
   const text = await ollamaGenerate(`${systemHint}\n\n${prompt}`, route.modelName)
 

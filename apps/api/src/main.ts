@@ -30,6 +30,7 @@ import { followupsRoutes } from './routes/followups.js'
 import { strategistRoutes } from './routes/strategist.js'
 import { autonomyRoutes } from './routes/autonomy.js'
 import { authRoutes } from './routes/auth.js'
+import { resumeImportRoutes } from './routes/resumeImport.js'
 
 const app = new Hono()
 
@@ -99,6 +100,7 @@ app.post('/dev/llm-roundtrip', async (c) => {
 
 // ── Auth middleware — applied per-prefix ──────────────────────
 app.use('/profile/*', authMiddleware)
+app.use('/profile/resume-import/*', authMiddleware)
 app.use('/achievements/*', authMiddleware)
 app.use('/opportunities/*', authMiddleware)
 app.use('/companies/*', authMiddleware)
@@ -118,6 +120,7 @@ app.use('/strategist/*', authMiddleware)
 
 // ── Mount route handlers ──────────────────────────────────────
 app.route('/profile', profileRoutes)
+app.route('/profile/resume-import', resumeImportRoutes)
 app.route('/achievements', achievementsRoutes)
 app.route('/opportunities', opportunitiesRoutes)
 app.route('/companies', companiesRoutes)

@@ -8,6 +8,7 @@ import type {
   CompanyListItem,
   Contact,
   CoverLetter,
+  Education,
   FollowUp,
   Interview,
   JobBoardSource,
@@ -19,9 +20,12 @@ import type {
   OutreachMessage,
   PipelineStage,
   Profile,
+  ProfileProject,
   ResumeVersion,
+  Skill,
   StrategistTask,
   Vvp,
+  WorkExperience,
 } from '@/types'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
@@ -38,6 +42,20 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
       Authorization: `Bearer ${getToken()}`,
       ...(init?.headers ?? {}),
     },
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({})) as { message?: string }
+    throw new Error(body.message ?? `API ${res.status}`)
+  }
+  return res.json() as Promise<T>
+}
+
+async function reqFormData<T>(path: string, formData: FormData): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: 'POST',
+    // No Content-Type header — browser sets multipart boundary automatically
+    headers: { Authorization: `Bearer ${getToken()}` },
+    body: formData,
   })
   if (!res.ok) {
     const body = await res.json().catch(() => ({})) as { message?: string }
@@ -68,6 +86,7 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ tone }),
       }),
+    outreach: (id: string) => req<OutreachMessage[]>(`/opportunities/${id}/outreach`),
     // Phase 4 (gated): enqueue auto-apply. Subject to Settings → Autonomy.
     apply: (id: string) => req<AgentTask>(`/opportunities/${id}/apply`, { method: 'POST' }),
   },
@@ -106,6 +125,53 @@ export const api = {
     get: () => req<Profile>('/profile'),
     update: (data: Partial<Profile>) =>
       req<Profile>('/profile', { method: 'PUT', body: JSON.stringify(data) }),
+    skills: {
+      list: () => req<Skill[]>('/profile/skills'),
+      upsert: (data: { name: string; proficiency?: number; years?: number } | Array<{ name: string; proficiency?: number; years?: number }>) =>
+        req<Skill[]>('/profile/skills', { method: 'POST', body: JSON.stringify(data) }),
+      delete: (name: string) =>
+        req<{ deleted: string }>(`/profile/skills/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+    },
+    workExperiences: {
+      list: () => req<WorkExperience[]>('/profile/work-experiences'),
+      create: (data: Omit<WorkExperience, 'id' | 'created_at'>) =>
+        req<WorkExperience>('/profile/work-experiences', { method: 'POST', body: JSON.stringify(data) }),
+      update: (id: string, data: Omit<WorkExperience, 'id' | 'created_at'>) =>
+        req<WorkExperience>(`/profile/work-experiences/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+      delete: (id: string) =>
+        req<{ deleted: string }>(`/profile/work-experiences/${id}`, { method: 'DELETE' }),
+    },
+    education: {
+      list: () => req<Education[]>('/profile/education'),
+      create: (data: Omit<Education, 'id' | 'created_at'>) =>
+        req<Education>('/profile/education', { method: 'POST', body: JSON.stringify(data) }),
+      update: (id: string, data: Omit<Education, 'id' | 'created_at'>) =>
+        req<Education>(`/profile/education/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+      delete: (id: string) =>
+        req<{ deleted: string }>(`/profile/education/${id}`, { method: 'DELETE' }),
+    },
+    projects: {
+      list: () => req<ProfileProject[]>('/profile/projects'),
+      create: (data: Omit<ProfileProject, 'id' | 'created_at'>) =>
+        req<ProfileProject>('/profile/projects', { method: 'POST', body: JSON.stringify(data) }),
+      update: (id: string, data: Omit<ProfileProject, 'id' | 'created_at'>) =>
+        req<ProfileProject>(`/profile/projects/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+      delete: (id: string) =>
+        req<{ deleted: string }>(`/profile/projects/${id}`, { method: 'DELETE' }),
+    },
+  },
+
+  resumeImport: {
+    upload: (file: File) => {
+      const fd = new FormData()
+      fd.append('file', file)
+      return reqFormData<{ taskId: string }>('/profile/resume-import', fd)
+    },
+    apply: (taskId: string) =>
+      req<{ applied: boolean; counts: { workExperiences: number; education: number; skills: number; projects: number } }>(
+        '/profile/resume-import/apply',
+        { method: 'POST', body: JSON.stringify({ task_id: taskId }) },
+      ),
   },
 
   resumes: {

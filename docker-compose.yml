@@ -3,6 +3,7 @@
 services:
   postgres:
     image: pgvector/pgvector:pg16          # postgres 16 with pgvector preinstalled
+    restart: unless-stopped                 # self-heal: bring the DB back if it crashes
     environment:
       POSTGRES_USER: careeros
       POSTGRES_PASSWORD: careeros
@@ -19,13 +20,25 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports: ["6379:6379"]
     volumes: ["./data/redis:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   ollama:
     image: ollama/ollama:latest
+    restart: unless-stopped
     ports: ["11434:11434"]
     volumes: ["./data/ollama:/root/.ollama"]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     # GPU users: uncomment the deploy block below (needs nvidia-container-toolkit).
     # deploy:
     #   resources:
@@ -34,14 +47,22 @@ services:
 
   api:
     build: ./apps/api          # Node 20 + Hono + Mastra (TypeScript)
+    restart: unless-stopped
     env_file: .env
     depends_on:
       postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
     ports: ["8000:8000"]
     volumes:
       - ./apps/api:/app
       - /app/node_modules       # don't clobber container-installed deps
     command: npm run dev
+    healthcheck:                # Node 20 has global fetch; no curl/wget needed in the image
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
 
   searxng:
     image: searxng/searxng:latest
@@ -54,6 +75,7 @@ services:
 
   web:
     build: ./apps/web
+    restart: unless-stopped
     depends_on: [api]
     ports: ["3000:3000"]
     environment:

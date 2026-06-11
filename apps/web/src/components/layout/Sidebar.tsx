@@ -13,6 +13,7 @@ import {
   Mail,
   Mic,
   BarChart2,
+  User,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { LucideIcon } from 'lucide-react'
@@ -22,6 +23,7 @@ type NavItem = { href: string; label: string; icon: LucideIcon; disabled?: boole
 const nav: NavItem[] = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/opportunities', label: 'Jobs', icon: Briefcase },
+  { href: '/profile', label: 'Profile', icon: User },
   { href: '/resume', label: 'Resume Studio', icon: FileText },
   { href: '/vvp', label: 'VVP Workspace', icon: Layers },
   { href: '/outreach', label: 'Outreach Hub', icon: Mail },

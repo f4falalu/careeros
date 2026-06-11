@@ -9,6 +9,7 @@ import {
   smallint,
   jsonb,
   integer,
+  date,
   index,
   uniqueIndex,
   customType,
@@ -146,8 +147,78 @@ export const profiles = pgTable('profiles', {
     .references(() => users.id, { onDelete: 'cascade' }),
   masterResume: jsonb('master_resume').notNull().default({}),
   tonePrefs: jsonb('tone_prefs').notNull().default({}),
+  // Hero / identity fields (added migration 0002)
+  headline: text('headline'),
+  bio: text('bio'),
+  location: text('location'),
+  workAuth: text('work_auth'),
+  languages: text('languages').array().default([]),
+  links: jsonb('links').notNull().default({}),
+  careerQuestions: jsonb('career_questions').notNull().default({}),
+  careerDna: jsonb('career_dna').notNull().default({}),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
+
+export const workExperiences = pgTable(
+  'work_experiences',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    companyName: text('company_name').notNull(),
+    title: text('title').notNull(),
+    employmentType: text('employment_type'),
+    startDate: date('start_date'),
+    endDate: date('end_date'),
+    isCurrent: boolean('is_current').notNull().default(false),
+    location: text('location'),
+    bullets: text('bullets').array().notNull().default([]),
+    skillsExtracted: text('skills_extracted').array().notNull().default([]),
+    sortOrder: smallint('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('work_experiences_user').on(t.userId, t.sortOrder)],
+)
+
+export const educations = pgTable(
+  'education',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    institution: text('institution').notNull(),
+    degree: text('degree'),
+    field: text('field'),
+    startDate: date('start_date'),
+    endDate: date('end_date'),
+    grade: text('grade'),
+    activities: text('activities').array().notNull().default([]),
+    sortOrder: smallint('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('education_user').on(t.userId, t.sortOrder)],
+)
+
+export const profileProjects = pgTable(
+  'profile_projects',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    title: text('title').notNull(),
+    description: text('description'),
+    role: text('role'),
+    tools: text('tools').array().notNull().default([]),
+    outcome: text('outcome'),
+    links: text('links').array().notNull().default([]),
+    sortOrder: smallint('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('profile_projects_user').on(t.userId, t.sortOrder)],
+)
 
 export const achievements = pgTable('achievements', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -582,6 +653,9 @@ export const usersRelations = relations(users, ({ many, one }) => ({
   profile: one(profiles, { fields: [users.id], references: [profiles.userId] }),
   achievements: many(achievements),
   skills: many(skills),
+  workExperiences: many(workExperiences),
+  educations: many(educations),
+  profileProjects: many(profileProjects),
   companies: many(companies),
   opportunities: many(opportunities),
   applications: many(applications),
@@ -715,3 +789,12 @@ export type NewJobBoardSource = typeof jobBoardSources.$inferInsert
 
 export type JobBoardSeen = typeof jobBoardSeen.$inferSelect
 export type NewJobBoardSeen = typeof jobBoardSeen.$inferInsert
+
+export type WorkExperience = typeof workExperiences.$inferSelect
+export type NewWorkExperience = typeof workExperiences.$inferInsert
+
+export type Education = typeof educations.$inferSelect
+export type NewEducation = typeof educations.$inferInsert
+
+export type ProfileProject = typeof profileProjects.$inferSelect
+export type NewProfileProject = typeof profileProjects.$inferInsert

@@ -212,4 +212,33 @@ app.post('/:id/match', async (c) => {
   return c.json(task, 202)
 })
 
+// ── GET /opportunities/:id/outreach ──────────────────────────
+app.get('/:id/outreach', async (c) => {
+  const userId = c.get('userId')
+  const { id } = c.req.param()
+
+  const [opportunity] = await db
+    .select({ id: schema.opportunities.id })
+    .from(schema.opportunities)
+    .where(and(eq(schema.opportunities.id, id), eq(schema.opportunities.userId, userId)))
+    .limit(1)
+
+  if (!opportunity) {
+    return c.json({ code: 'not_found', message: 'Opportunity not found' }, 404)
+  }
+
+  const messages = await db
+    .select()
+    .from(schema.outreachMessages)
+    .where(
+      and(
+        eq(schema.outreachMessages.opportunityId, id),
+        eq(schema.outreachMessages.userId, userId),
+      ),
+    )
+    .orderBy(desc(schema.outreachMessages.createdAt))
+
+  return c.json(messages)
+})
+
 export { app as opportunitiesRoutes }

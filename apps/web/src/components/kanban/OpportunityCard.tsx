@@ -1,6 +1,7 @@
 'use client'
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import Link from 'next/link'
 import { ExternalLink, Wand2, FileText, ChevronDown, X, Copy, Check, Layers, Mail, Mic, Send } from 'lucide-react'
 import { api } from '@/lib/api'
 import { formatRelative, titleCase } from '@/lib/utils'
@@ -165,9 +166,12 @@ export function OpportunityCard({ opportunity, application }: Props) {
       <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-md p-4 hover-lift group">
         {/* Title row */}
         <div className="flex items-start justify-between gap-2 mb-2">
-          <p className="text-[13px] font-semibold text-[var(--color-text)] leading-snug">
+          <Link
+            href={`/opportunities/${opportunity.id}`}
+            className="text-[13px] font-semibold text-[var(--color-text)] leading-snug hover:underline"
+          >
             {opportunity.role_title}
-          </p>
+          </Link>
           {opportunity.source_url && (
             <a
               href={opportunity.source_url}

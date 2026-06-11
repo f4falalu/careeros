@@ -13,6 +13,9 @@ export async function enqueueAgent(
   opts?: { priority?: number },
 ) {
   return agentQueue.add(jobName, data, {
+    // Self-heal transient failures (model/network blips) before giving up.
+    attempts: 3,
+    backoff: { type: 'exponential', delay: 2000 },
     removeOnComplete: 100,
     removeOnFail: 200,
     ...opts,

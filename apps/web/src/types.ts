@@ -125,7 +125,67 @@ export interface Profile {
   id: string
   master_resume?: Record<string, unknown>
   tone_prefs?: Record<string, unknown>
+  headline?: string | null
+  bio?: string | null
+  location?: string | null
+  work_auth?: string | null
+  languages?: string[]
+  links?: Record<string, string>
+  career_questions?: Record<string, string>
+  career_dna?: {
+    archetype?: string[]
+    strengths?: string[]
+    growth_areas?: string[]
+    recommended_roles?: string[]
+  }
   updated_at: string
+}
+
+export interface Skill {
+  id: string
+  name: string
+  proficiency?: number | null
+  years?: string | null
+}
+
+export interface WorkExperience {
+  id: string
+  company_name: string
+  title: string
+  employment_type?: string | null
+  start_date?: string | null
+  end_date?: string | null
+  is_current: boolean
+  location?: string | null
+  bullets: string[]
+  skills_extracted: string[]
+  sort_order: number
+  created_at: string
+}
+
+export interface Education {
+  id: string
+  institution: string
+  degree?: string | null
+  field?: string | null
+  start_date?: string | null
+  end_date?: string | null
+  grade?: string | null
+  activities: string[]
+  sort_order: number
+  created_at: string
+}
+
+export interface ProfileProject {
+  id: string
+  title: string
+  description?: string | null
+  role?: string | null
+  tools: string[]
+  outcome?: string | null
+  links: string[]
+  sort_order: number
+  created_at: string
 }
 
 // ── Phase 2 types ─────────────────────────────────────────────

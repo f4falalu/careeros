@@ -172,9 +172,12 @@ function OpportunityRow({ opp }: { opp: Opportunity }) {
 
   return (
     <div className="border-b border-[var(--color-border)] last:border-0">
-      <button
+      <div
+        role="button"
+        tabIndex={0}
         onClick={() => setExpanded((e) => !e)}
-        className="w-full flex items-center gap-4 px-6 py-4 hover:bg-[var(--color-bg)] transition-colors text-left"
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded((x) => !x) } }}
+        className="w-full flex items-center gap-4 px-6 py-4 hover:bg-[var(--color-bg)] transition-colors text-left cursor-pointer"
       >
         <FileText size={16} strokeWidth={1.5} className="shrink-0 text-[var(--color-muted)]" />
         <div className="flex-1 min-w-0">
@@ -207,7 +210,7 @@ function OpportunityRow({ opp }: { opp: Opportunity }) {
           )}
           {genResume.isPending ? 'Generating…' : 'Generate'}
         </button>
-      </button>
+      </div>
 
       {expanded && (
         <div className="px-6 pb-4 bg-[var(--color-bg)]">

@@ -246,6 +246,14 @@ export function startAgentWorker() {
             break
           }
 
+          case 'resume_parse': {
+            const { runResumeParserAgent } = await import('../agents/resumeParser.js')
+            result = await runResumeParserAgent(
+              jobData as { taskId: string; userId: string; pdfText: string },
+            )
+            break
+          }
+
           default:
             throw new Error(`Unknown job name: ${job.name}`)
         }
@@ -275,8 +283,17 @@ export function startAgentWorker() {
         return result
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        await updateTask(taskId, { status: 'failed', error: msg, finishedAt: new Date() })
-        // Re-throw so BullMQ records the failure and can retry if configured.
+        // BullMQ retries (queue.ts: attempts/backoff). Only mark the task `failed`
+        // on the last attempt; otherwise re-queue it so the UI doesn't flash failure
+        // for a blip that self-heals on the next try.
+        const maxAttempts = job.opts.attempts ?? 1
+        const isFinalAttempt = job.attemptsMade + 1 >= maxAttempts
+        await updateTask(taskId, {
+          status: isFinalAttempt ? 'failed' : 'queued',
+          error: msg,
+          ...(isFinalAttempt ? { finishedAt: new Date() } : {}),
+        })
+        // Re-throw so BullMQ records the failure and schedules the retry.
         throw err
       }
     },
