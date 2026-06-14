@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { and, eq } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { enqueueAgent } from '../workers/queue.js'
+import { serializeApplication } from '../lib/serialize.js'
 
 const app = new Hono()
 
@@ -30,7 +31,7 @@ app.get('/', async (c) => {
     .from(schema.applications)
     .where(and(...conditions))
 
-  return c.json(rows)
+  return c.json(rows.map(serializeApplication))
 })
 
 // ── POST /applications ────────────────────────────────────────
@@ -94,7 +95,7 @@ app.post('/', async (c) => {
     note: 'Application created',
   })
 
-  return c.json(application, 201)
+  return c.json(serializeApplication(application), 201)
 })
 
 // ── PATCH /applications/:id/stage ─────────────────────────────
@@ -147,7 +148,7 @@ app.patch('/:id/stage', async (c) => {
     note: body.note,
   })
 
-  return c.json(updated)
+  return c.json(serializeApplication(updated))
 })
 
 // ── POST /applications/:id/interview-brief ────────────────────

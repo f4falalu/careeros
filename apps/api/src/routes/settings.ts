@@ -3,6 +3,8 @@ import { z } from 'zod'
 import { eq, and } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { normalizeAutonomy } from '../agents/lib/autonomy.js'
+import { PROVIDER_BASE_URLS, SYSTEM_RECOMMENDED } from '../router/modelRouter.js'
+import { config } from '../config.js'
 
 const app = new Hono()
 
@@ -150,7 +152,7 @@ app.get('/providers', async (c) => {
 
 // ── POST /settings/providers ──────────────────────────────────
 const ProviderInputSchema = z.object({
-  provider: z.enum(['openrouter', 'anthropic', 'openai', 'ollama']),
+  provider: z.enum(['openrouter', 'anthropic', 'openai', 'groq', 'gemini', 'ollama']),
   base_url: z.string().optional(),
   default_model: z.string().optional(),
   api_key: z.string().optional(), // plaintext, write-only — encrypted at rest
@@ -294,49 +296,162 @@ app.delete('/providers/:id', async (c) => {
 })
 
 // ─────────────────────────────────────────────────────────────
+// Agent Routing — per-agent model assignments
+// ─────────────────────────────────────────────────────────────
+
+const AgentRouteSchema = z.object({
+  provider: z.enum(['openrouter', 'anthropic', 'openai', 'groq', 'gemini', 'ollama']),
+  model: z.string().min(1),
+})
+
+const AgentRoutingInputSchema = z.object({
+  defaultProvider: z.enum(['openrouter', 'anthropic', 'openai', 'groq', 'gemini', 'ollama']).optional(),
+  agentRoutes: z.record(AgentRouteSchema).optional(),
+})
+
+// ── GET /settings/agent-routing ───────────────────────────────
+app.get('/agent-routing', async (c) => {
+  const userId = c.get('userId')
+
+  const [settings] = await db
+    .select({ routing: schema.appSettings.routing })
+    .from(schema.appSettings)
+    .where(eq(schema.appSettings.userId, userId))
+    .limit(1)
+
+  const routing = (settings?.routing ?? {}) as Record<string, unknown>
+
+  return c.json({
+    defaultProvider: (routing.defaultProvider as string | undefined) ?? null,
+    agentRoutes: (routing.agentRoutes ?? {}) as Record<string, { provider: string; model: string }>,
+    systemRecommended: SYSTEM_RECOMMENDED,
+  })
+})
+
+// ── PUT /settings/agent-routing ───────────────────────────────
+app.put('/agent-routing', async (c) => {
+  const userId = c.get('userId')
+  let body: z.infer<typeof AgentRoutingInputSchema>
+  try {
+    body = AgentRoutingInputSchema.parse(await c.req.json())
+  } catch (err) {
+    return c.json({ code: 'validation_error', message: String(err) }, 400)
+  }
+
+  const [existing] = await db
+    .select({ routing: schema.appSettings.routing })
+    .from(schema.appSettings)
+    .where(eq(schema.appSettings.userId, userId))
+    .limit(1)
+
+  const currentRouting = (existing?.routing ?? {}) as Record<string, unknown>
+  const newRouting: Record<string, unknown> = { ...currentRouting }
+
+  if (body.defaultProvider !== undefined) newRouting.defaultProvider = body.defaultProvider
+  if (body.agentRoutes !== undefined) newRouting.agentRoutes = body.agentRoutes
+
+  if (existing) {
+    await db
+      .update(schema.appSettings)
+      .set({ routing: newRouting, updatedAt: new Date() })
+      .where(eq(schema.appSettings.userId, userId))
+  } else {
+    await db
+      .insert(schema.appSettings)
+      .values({ userId, routing: newRouting })
+  }
+
+  return c.json({
+    defaultProvider: (newRouting.defaultProvider as string | undefined) ?? null,
+    agentRoutes: (newRouting.agentRoutes ?? {}) as Record<string, { provider: string; model: string }>,
+    systemRecommended: SYSTEM_RECOMMENDED,
+  })
+})
+
+// ─────────────────────────────────────────────────────────────
 // Channels
 // ─────────────────────────────────────────────────────────────
 
+const VALID_CHANNELS = ['telegram', 'whatsapp'] as const
+type ValidChannel = (typeof VALID_CHANNELS)[number]
+
 // ── GET /settings/channels ────────────────────────────────────
+// Status is derived from users.telegramUserId / users.whatsappNumber.
+// channel_configs stores connection metadata (username, etc.) written by the bot.
 app.get('/channels', async (c) => {
   const userId = c.get('userId')
 
-  const rows = await db
-    .select({
-      channel: schema.channelConfigs.channel,
-      enabled: schema.channelConfigs.enabled,
-      status: schema.channelConfigs.status,
-      config: schema.channelConfigs.config,
-      lastCheckedAt: schema.channelConfigs.lastCheckedAt,
-    })
+  const [user] = await db
+    .select({ telegramUserId: schema.users.telegramUserId, whatsappNumber: schema.users.whatsappNumber })
+    .from(schema.users)
+    .where(eq(schema.users.id, userId))
+    .limit(1)
+
+  const configs = await db
+    .select({ channel: schema.channelConfigs.channel, config: schema.channelConfigs.config })
     .from(schema.channelConfigs)
     .where(eq(schema.channelConfigs.userId, userId))
 
-  return c.json(rows)
+  const telegramConfig = configs.find(r => r.channel === 'telegram')
+  const whatsappConfig = configs.find(r => r.channel === 'whatsapp')
+
+  return c.json([
+    {
+      channel: 'telegram',
+      status: user?.telegramUserId ? 'connected' : 'disconnected',
+      connected_as: user?.telegramUserId
+        ? ((telegramConfig?.config as Record<string, unknown>)?.username as string | null) ?? null
+        : null,
+    },
+    {
+      channel: 'whatsapp',
+      status: user?.whatsappNumber ? 'connected' : 'disconnected',
+      connected_as: user?.whatsappNumber ?? null,
+    },
+  ])
 })
 
-// ── PUT /settings/channels/:channel ──────────────────────────
-const ChannelInputSchema = z.object({
-  token: z.string().optional(),
-  allowed_user_ids: z.array(z.string()).optional(),
-  base_url: z.string().optional(),
-  session: z.string().optional(),
-  enabled: z.boolean().optional(),
-})
-
-app.put('/channels/:channel', async (c) => {
+// ── POST /settings/channels/:channel/connect ─────────────────
+// Generates a one-time link token and returns the deep link.
+// The bot receives the token, maps the user's account, and marks it used.
+app.post('/channels/:channel/connect', async (c) => {
   const userId = c.get('userId')
-  const { channel } = c.req.param()
+  const channel = c.req.param('channel') as ValidChannel
 
-  if (!['telegram', 'whatsapp'].includes(channel)) {
+  if (!VALID_CHANNELS.includes(channel)) {
     return c.json({ code: 'validation_error', message: 'Invalid channel' }, 400)
   }
 
-  let body: z.infer<typeof ChannelInputSchema>
-  try {
-    body = ChannelInputSchema.parse(await c.req.json())
-  } catch (err) {
-    return c.json({ code: 'validation_error', message: String(err) }, 400)
+  // 36-char hex token
+  const token = Array.from(crypto.getRandomValues(new Uint8Array(18)))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('')
+
+  const expiresAt = new Date(Date.now() + 15 * 60 * 1000) // 15 minutes
+
+  await db.insert(schema.channelLinkTokens).values({ userId, channel, token, expiresAt })
+
+  const deepLink =
+    channel === 'telegram'
+      ? `https://t.me/${config.telegramBotUsername}?start=${token}`
+      : `https://wa.me/${config.whatsappNumber}?text=CONNECT-${token}`
+
+  return c.json({ channel, deep_link: deepLink, expires_at: expiresAt.toISOString() })
+})
+
+// ── POST /settings/channels/:channel/disconnect ───────────────
+app.post('/channels/:channel/disconnect', async (c) => {
+  const userId = c.get('userId')
+  const channel = c.req.param('channel') as ValidChannel
+
+  if (!VALID_CHANNELS.includes(channel)) {
+    return c.json({ code: 'validation_error', message: 'Invalid channel' }, 400)
+  }
+
+  if (channel === 'telegram') {
+    await db.update(schema.users).set({ telegramUserId: null }).where(eq(schema.users.id, userId))
+  } else {
+    await db.update(schema.users).set({ whatsappNumber: null }).where(eq(schema.users.id, userId))
   }
 
   const [existing] = await db
@@ -345,75 +460,14 @@ app.put('/channels/:channel', async (c) => {
     .where(and(eq(schema.channelConfigs.userId, userId), eq(schema.channelConfigs.channel, channel)))
     .limit(1)
 
-  // Build config object (never store token in plaintext config — store masked)
-  const configData: Record<string, unknown> = {}
-  if (body.allowed_user_ids) configData.allowed_user_ids = body.allowed_user_ids
-  if (body.base_url) configData.base_url = body.base_url
-  if (body.session) configData.session = body.session
-
-  // Store token encrypted if provided
-  let credentialId: string | null = null
-  if (body.token) {
-    const encoded = Buffer.from(body.token).toString('base64')
-    const nonce = Buffer.from(crypto.getRandomValues(new Uint8Array(12))).toString('base64')
-    const last4 = body.token.slice(-4) || null
-
-    const [cred] = await db
-      .insert(schema.credentials)
-      .values({
-        userId,
-        label: `channel:${channel}`,
-        kind: 'bearer',
-        ciphertext: encoded,
-        nonce,
-        last4,
-        status: 'active',
-      })
-      .returning()
-    credentialId = cred.id
-  }
-
-  let result
   if (existing) {
-    const updates: Partial<typeof schema.channelConfigs.$inferInsert> = {
-      config: configData,
-      lastCheckedAt: new Date(),
-    }
-    if (body.enabled !== undefined) updates.enabled = body.enabled
-    if (credentialId) updates.credentialId = credentialId
-
-    ;[result] = await db
+    await db
       .update(schema.channelConfigs)
-      .set(updates)
+      .set({ status: 'disconnected', enabled: false, config: {}, lastCheckedAt: new Date() })
       .where(eq(schema.channelConfigs.id, existing.id))
-      .returning()
-  } else {
-    ;[result] = await db
-      .insert(schema.channelConfigs)
-      .values({
-        userId,
-        channel,
-        credentialId,
-        config: configData,
-        enabled: body.enabled ?? false,
-        status: 'disconnected',
-        lastCheckedAt: new Date(),
-      })
-      .returning()
   }
 
-  return c.json({
-    channel: result.channel,
-    enabled: result.enabled,
-    status: result.status,
-    config: result.config,
-    lastCheckedAt: result.lastCheckedAt,
-  })
-})
-
-// ── POST /settings/channels/:channel/test ────────────────────
-app.post('/channels/:channel/test', async (c) => {
-  return c.json({ ok: true, latency_ms: null, detail: 'Channel test not yet implemented (Phase 2)' })
+  return c.body(null, 204)
 })
 
 // ─────────────────────────────────────────────────────────────
@@ -456,12 +510,99 @@ app.get('/integrations/:kind/callback', async (c) => {
 // Models
 // ─────────────────────────────────────────────────────────────
 
-// ── GET /settings/models ──────────────────────────────────────
+// ── GET /settings/models?provider=openrouter ──────────────────
+// Returns available models for a provider. For OpenRouter, fetches live from their API
+// using the user's stored key. For others, returns a curated static list.
 app.get('/models', async (c) => {
+  const userId = c.get('userId')
+  const provider = c.req.query('provider') ?? 'openrouter'
+
+  if (provider === 'openrouter') {
+    // Try user's stored key first, then env var
+    let apiKey: string | null = null
+
+    const [providerCfg] = await db
+      .select({ credentialId: schema.providerConfigs.credentialId })
+      .from(schema.providerConfigs)
+      .where(and(eq(schema.providerConfigs.userId, userId), eq(schema.providerConfigs.provider, 'openrouter')))
+      .limit(1)
+
+    if (providerCfg?.credentialId) {
+      const [cred] = await db
+        .select({ ciphertext: schema.credentials.ciphertext })
+        .from(schema.credentials)
+        .where(and(eq(schema.credentials.id, providerCfg.credentialId), eq(schema.credentials.status, 'active')))
+        .limit(1)
+      if (cred) apiKey = Buffer.from(cred.ciphertext, 'base64').toString('utf8')
+    }
+
+    if (!apiKey) apiKey = process.env.OPENROUTER_API_KEY ?? null
+
+    if (apiKey) {
+      try {
+        const res = await fetch('https://openrouter.ai/api/v1/models', {
+          headers: { Authorization: `Bearer ${apiKey}` },
+          signal: AbortSignal.timeout(8000),
+        })
+        if (res.ok) {
+          const data = (await res.json()) as { data: Array<{ id: string; name: string; context_length: number; pricing: { prompt: string; completion: string } }> }
+          return c.json({
+            provider: 'openrouter',
+            models: data.data.map((m) => ({
+              id: m.id,
+              name: m.name,
+              context_length: m.context_length,
+              pricing: m.pricing,
+            })),
+          })
+        }
+      } catch { /* fall through to static list */ }
+    }
+  }
+
+  // Static curated lists for each provider
+  const STATIC_MODELS: Record<string, Array<{ id: string; name: string }>> = {
+    anthropic: [
+      { id: 'claude-opus-4-8',            name: 'Claude Opus 4.8' },
+      { id: 'claude-sonnet-4-6',           name: 'Claude Sonnet 4.6' },
+      { id: 'claude-haiku-4-5-20251001',   name: 'Claude Haiku 4.5' },
+      { id: 'claude-3-5-sonnet-20241022',  name: 'Claude 3.5 Sonnet' },
+      { id: 'claude-3-5-haiku-20241022',   name: 'Claude 3.5 Haiku' },
+    ],
+    openai: [
+      { id: 'gpt-4o',           name: 'GPT-4o' },
+      { id: 'gpt-4o-mini',      name: 'GPT-4o Mini' },
+      { id: 'o3',               name: 'o3' },
+      { id: 'o4-mini',          name: 'o4-mini' },
+    ],
+    groq: [
+      { id: 'llama-3.3-70b-versatile',     name: 'Llama 3.3 70B' },
+      { id: 'llama-3.1-8b-instant',        name: 'Llama 3.1 8B (fast)' },
+      { id: 'gemma2-9b-it',                name: 'Gemma2 9B' },
+      { id: 'mixtral-8x7b-32768',          name: 'Mixtral 8x7B' },
+    ],
+    gemini: [
+      { id: 'gemini-2.5-pro-preview',      name: 'Gemini 2.5 Pro' },
+      { id: 'gemini-2.0-flash',            name: 'Gemini 2.0 Flash' },
+      { id: 'gemini-1.5-pro',              name: 'Gemini 1.5 Pro' },
+      { id: 'gemini-1.5-flash',            name: 'Gemini 1.5 Flash' },
+    ],
+    openrouter: [
+      { id: 'anthropic/claude-3.5-sonnet',              name: 'Claude 3.5 Sonnet' },
+      { id: 'anthropic/claude-opus-4',                  name: 'Claude Opus 4' },
+      { id: 'openai/gpt-4o',                            name: 'GPT-4o' },
+      { id: 'google/gemini-2.5-pro-preview',            name: 'Gemini 2.5 Pro' },
+      { id: 'meta-llama/llama-3.3-70b-instruct',        name: 'Llama 3.3 70B' },
+      { id: 'meta-llama/llama-3.1-8b-instruct:free',    name: 'Llama 3.1 8B (free)' },
+      { id: 'deepseek/deepseek-r1',                     name: 'DeepSeek R1' },
+      { id: 'google/gemini-2.0-flash-001',              name: 'Gemini 2.0 Flash' },
+    ],
+    ollama: [],
+  }
+
   return c.json({
-    ollama_models: [],
-    cloud_models: [],
-    embedding_model: 'nomic-embed-text',
+    provider,
+    models: STATIC_MODELS[provider] ?? [],
   })
 })
 

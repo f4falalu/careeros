@@ -52,10 +52,15 @@ export interface Opportunity {
   visa_signal?: string
   required_skills: string[]
   nice_to_haves: string[]
+  description?: string
   source_url?: string
   apply_url?: string
   source_channel: SourceChannel
   created_at: string
+  // enriched by with_company / with_match
+  company_name?: string | null
+  company_industry?: string | null
+  match_score?: { score: number; missing_skills: string[]; rationale: string | null; computed_at: string } | null
 }
 
 export interface MatchScore {

@@ -9,6 +9,8 @@ import { eq } from 'drizzle-orm'
 import { generateStructured } from '../router/modelRouter.js'
 import { webFetch, cleanUrl } from './lib/tools.js'
 import { markRunning, markSucceeded, markFailed } from './lib/task.js'
+import type { MemoryService } from '../services/memory.js'
+import type { GraphService } from '../services/graph.js'
 
 // ─────────────────────────────────────────────────────────────
 // Output schema
@@ -34,14 +36,18 @@ type JobExtraction = z.infer<typeof JobExtractionSchema>
 // ─────────────────────────────────────────────────────────────
 // Agent entry point
 // ─────────────────────────────────────────────────────────────
-export async function runIntakeAgent(input: {
-  taskId: string
-  userId: string
-  opportunityId: string
-  url?: string
-  text?: string
-  filePath?: string
-}): Promise<Record<string, unknown>> {
+export async function runIntakeAgent(
+  input: {
+    taskId: string
+    userId: string
+    opportunityId: string
+    url?: string
+    text?: string
+    filePath?: string
+  },
+  memoryService?: MemoryService,
+  graphService?: GraphService,
+): Promise<Record<string, unknown>> {
   await markRunning(input.taskId)
 
   let jobText = ''
@@ -200,6 +206,48 @@ Extract the structured job data. For confidence: 1.0 = all fields clear, 0.0 = m
     extraction,
     companyId,
     lowConfidence: extraction.confidence < 0.5,
+  }
+
+  // 7. Graph enrichment: Opportunity node, Company node, REQUIRES edges for each required skill
+  if (graphService) {
+    try {
+      const skillNodes = extraction.required_skills.map((s) => ({ type: 'skill' as const, label: s }))
+      await graphService.enrich(input.userId, {
+        nodes: [
+          { type: 'opportunity', entityId: input.opportunityId, label: extraction.role_title },
+          { type: 'company', entityId: companyId, label: extraction.company_name },
+          ...skillNodes,
+        ],
+        edges: [
+          ...extraction.required_skills.map((s) => ({
+            fromNodeType: 'opportunity',
+            fromEntityId: input.opportunityId,
+            fromLabel: extraction.role_title,
+            toNodeType: 'skill',
+            toLabel: s,
+            relationship: 'REQUIRES',
+            evidence: [{ source: 'intake_agent', confidence: extraction.confidence }],
+          })),
+        ],
+      })
+    } catch (err) {
+      console.error('[intake] graph enrich error (non-blocking):', String(err))
+    }
+  }
+
+  // 8. Save observation
+  if (memoryService) {
+    try {
+      await memoryService.saveObservation(
+        input.userId,
+        'intake',
+        `Parsed job "${extraction.role_title}" at ${extraction.company_name}. ${extraction.required_skills.length} required skills extracted. Confidence: ${Math.round(extraction.confidence * 100)}%.`,
+        'opportunity',
+        input.opportunityId,
+      )
+    } catch (err) {
+      console.error('[intake] saveObservation error (non-blocking):', String(err))
+    }
   }
 
   await markSucceeded(input.taskId, {

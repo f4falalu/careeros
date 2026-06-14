@@ -12,6 +12,7 @@ import { generateStructured } from '../router/modelRouter.js'
 import { search } from './lib/tools.js'
 import { markRunning, markSucceeded, markFailed } from './lib/task.js'
 import { getAutonomy } from './lib/autonomy.js'
+import type { MemoryService } from '../services/memory.js'
 
 const EnrichmentSchema = z.object({
   title: z.string().nullable().optional(),
@@ -25,11 +26,14 @@ const EnrichmentSchema = z.object({
 
 type Enrichment = z.infer<typeof EnrichmentSchema>
 
-export async function runEnrichAgent(input: {
-  taskId: string
-  userId: string
-  contactId: string
-}): Promise<Record<string, unknown>> {
+export async function runEnrichAgent(
+  input: {
+    taskId: string
+    userId: string
+    contactId: string
+  },
+  memoryService?: MemoryService,
+): Promise<Record<string, unknown>> {
   await markRunning(input.taskId)
 
   const autonomy = await getAutonomy(input.userId)
@@ -136,6 +140,20 @@ Return the enrichment. confidence: 1.0 = clearly the right person, 0.0 = unsure.
     filledFields,
     suggestion: data,
     sources: results.map((r) => ({ title: r.title, url: r.url })),
+  }
+
+  if (memoryService && filledFields.length > 0) {
+    try {
+      await memoryService.saveObservation(
+        input.userId,
+        'enrich',
+        `Enriched contact ${contact.name}: filled ${filledFields.join(', ')}. Confidence: ${Math.round(data.confidence * 100)}%.`,
+        'contact',
+        input.contactId,
+      )
+    } catch (err) {
+      console.error('[enrich] saveObservation error (non-blocking):', String(err))
+    }
   }
 
   await markSucceeded(input.taskId, {

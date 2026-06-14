@@ -64,7 +64,7 @@ async function reqFormData<T>(path: string, formData: FormData): Promise<T> {
   return res.json() as Promise<T>
 }
 
-function qs(params?: Record<string, string | number | undefined>): string {
+function qs(params?: Record<string, string | number | boolean | undefined>): string {
   if (!params) return ''
   const p = new URLSearchParams()
   for (const [k, v] of Object.entries(params)) {
@@ -76,8 +76,17 @@ function qs(params?: Record<string, string | number | undefined>): string {
 
 export const api = {
   opportunities: {
-    list: (params?: { stage?: string; source?: string; limit?: number }) =>
-      req<OpportunityPage>(`/opportunities${qs(params)}`),
+    list: (params?: {
+      stage?: string
+      source?: string
+      limit?: number
+      work_model?: string
+      q?: string
+      since?: string
+      with_company?: boolean
+      with_match?: boolean
+      cursor?: string
+    }) => req<OpportunityPage>(`/opportunities${qs(params)}`),
     get: (id: string) => req<OpportunityDetail>(`/opportunities/${id}`),
     match: (id: string) => req<AgentTask>(`/opportunities/${id}/match`, { method: 'POST' }),
     resume: (id: string) => req<AgentTask>(`/opportunities/${id}/resume`, { method: 'POST' }),
@@ -284,14 +293,72 @@ export const api = {
     get: () => req<AppSettings>('/settings'),
     update: (data: { autonomy?: AutonomyConfig }) =>
       req<AppSettings>('/settings', { method: 'PATCH', body: JSON.stringify(data) }),
+
+    providers: {
+      list: () => req<ProviderConfig[]>('/settings/providers'),
+      save: (data: {
+        provider: ProviderName
+        api_key?: string
+        base_url?: string
+        default_model?: string
+        enabled?: boolean
+      }) => req<ProviderConfig>('/settings/providers', { method: 'POST', body: JSON.stringify(data) }),
+      remove: (id: string) => req<void>(`/settings/providers/${id}`, { method: 'DELETE' }),
+      test: (id: string) => req<{ ok: boolean; latency_ms: number | null; detail: string }>(`/settings/providers/${id}/test`, { method: 'POST' }),
+    },
+
+    agentRouting: {
+      get: () => req<AgentRoutingConfig>('/settings/agent-routing'),
+      save: (data: { defaultProvider?: ProviderName; agentRoutes?: Record<string, AgentRoute> }) =>
+        req<AgentRoutingConfig>('/settings/agent-routing', { method: 'PUT', body: JSON.stringify(data) }),
+    },
+
+    models: {
+      list: (provider: ProviderName) => req<{ provider: string; models: ModelOption[] }>(`/settings/models?provider=${provider}`),
+    },
+
     channels: {
       list: () =>
-        req<Array<{ channel: string; enabled: boolean; status: string; config: Record<string, unknown> }>>('/settings/channels'),
-      saveTelegram: (data: { token?: string; allowed_user_ids?: string[]; enabled?: boolean }) =>
-        req<{ channel: string; enabled: boolean; status: string; config: Record<string, unknown> }>(
-          '/settings/channels/telegram',
-          { method: 'PUT', body: JSON.stringify(data) },
+        req<Array<{ channel: string; status: string; connected_as: string | null }>>('/settings/channels'),
+      connect: (channel: string) =>
+        req<{ channel: string; deep_link: string; expires_at: string }>(
+          `/settings/channels/${channel}/connect`,
+          { method: 'POST' },
         ),
+      disconnect: (channel: string) =>
+        req<void>(`/settings/channels/${channel}/disconnect`, { method: 'POST' }),
     },
   },
+}
+
+// ─── Settings types ──────────────────────────────────────────
+
+export type ProviderName = 'openrouter' | 'anthropic' | 'openai' | 'groq' | 'gemini' | 'ollama'
+
+export interface ProviderConfig {
+  id: string
+  provider: ProviderName
+  base_url: string | null
+  default_model: string | null
+  enabled: boolean
+  key_last4: string | null
+  status: 'connected' | 'disconnected'
+}
+
+export interface AgentRoute {
+  provider: ProviderName
+  model: string
+}
+
+export interface AgentRoutingConfig {
+  defaultProvider: ProviderName | null
+  agentRoutes: Record<string, AgentRoute>
+  systemRecommended: Record<string, AgentRoute>
+}
+
+export interface ModelOption {
+  id: string
+  name: string
+  context_length?: number
+  pricing?: { prompt: string; completion: string }
 }

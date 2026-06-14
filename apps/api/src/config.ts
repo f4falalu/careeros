@@ -23,6 +23,10 @@ export const config = {
 
   // Privacy: when true, anything touching personal data is forced local regardless of fallback.
   blockCloudPersonalData: (process.env.BLOCK_CLOUD_PERSONAL_DATA ?? "true") === "true",
+
+  // Communication channels — CareerOS-owned shared bots (users never configure these).
+  telegramBotUsername: process.env.TELEGRAM_BOT_USERNAME ?? "CareerOSBot",
+  whatsappNumber: process.env.WHATSAPP_NUMBER ?? "",
 };
 
 // Default local model per tier — see docs/03-RESOURCES.md. Changeable via settings later.

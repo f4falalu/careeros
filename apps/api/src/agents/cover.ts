@@ -9,6 +9,7 @@ import { db, schema } from '../db/index.js'
 import { eq } from 'drizzle-orm'
 import { generateStructured } from '../router/modelRouter.js'
 import { markRunning, markSucceeded, markFailed } from './lib/task.js'
+import type { MemoryService } from '../services/memory.js'
 
 // ─────────────────────────────────────────────────────────────
 // Output schema
@@ -24,12 +25,15 @@ type CoverLetter = z.infer<typeof CoverLetterSchema>
 // ─────────────────────────────────────────────────────────────
 // Agent entry point
 // ─────────────────────────────────────────────────────────────
-export async function runCoverAgent(input: {
-  taskId: string
-  userId: string
-  opportunityId: string
-  tone?: string
-}): Promise<Record<string, unknown>> {
+export async function runCoverAgent(
+  input: {
+    taskId: string
+    userId: string
+    opportunityId: string
+    tone?: string
+  },
+  memoryService?: MemoryService,
+): Promise<Record<string, unknown>> {
   await markRunning(input.taskId)
 
   const [opportunity] = await db
@@ -42,20 +46,28 @@ export async function runCoverAgent(input: {
     return { error: 'Opportunity not found' }
   }
 
-  // 1. Load candidate data
-  const [profile] = await db
-    .select()
-    .from(schema.profiles)
-    .where(eq(schema.profiles.userId, input.userId))
+  // 1. Load candidate data via MemoryService if available
+  let profileToneDefault: string
+  let achievements: Array<{ summary: string }>
+  let profileFallback: string
 
-  const achievements = await db
-    .select()
-    .from(schema.achievements)
-    .where(eq(schema.achievements.userId, input.userId))
+  if (memoryService) {
+    const ctx = await memoryService.assembleContext(input.userId, {
+      entityType: 'opportunity',
+      entityId: input.opportunityId,
+    })
+    profileToneDefault = ((ctx.profile as Record<string, unknown>)?.tonePrefs as Record<string, unknown>)?.default as string ?? 'warm'
+    achievements = ctx.achievements
+    profileFallback = JSON.stringify((ctx.profile as Record<string, unknown>)?.masterResume ?? {}).slice(0, 1_000)
+  } else {
+    const [profile] = await db.select().from(schema.profiles).where(eq(schema.profiles.userId, input.userId))
+    const rows = await db.select().from(schema.achievements).where(eq(schema.achievements.userId, input.userId))
+    profileToneDefault = ((profile?.tonePrefs as Record<string, unknown> | null)?.default as string) ?? 'warm'
+    achievements = rows
+    profileFallback = JSON.stringify(profile?.masterResume ?? {}).slice(0, 1_000)
+  }
 
   // 2. Resolve tone: caller override > profile prefs > default 'warm'
-  const profileToneDefault =
-    (profile?.tonePrefs as Record<string, unknown> | null)?.default ?? 'warm'
   const tone = (input.tone ?? profileToneDefault ?? 'warm') as 'formal' | 'warm' | 'direct'
 
   // 3. Enrich with company brief (if available)
@@ -82,11 +94,8 @@ export async function runCoverAgent(input: {
   // 4. Build profile snippet from achievements (fall back to master resume)
   const profileSnippet =
     achievements.length > 0
-      ? achievements
-          .slice(0, 5)
-          .map((a) => a.summary)
-          .join('\n')
-      : JSON.stringify(profile?.masterResume ?? {}).slice(0, 1_000)
+      ? achievements.slice(0, 5).map((a) => a.summary).join('\n')
+      : profileFallback
 
   // 5. Generate cover letter
   const prompt = `Write a cover letter / application email in ${tone} tone. Ground specifics in the company brief and the candidate's REAL experience. No fabricated achievements. Keep it under 250 words.
@@ -137,11 +146,25 @@ Generate a cover letter with a subject line.`
     body: cover.body,
   }
 
+  if (memoryService) {
+    try {
+      await memoryService.saveObservation(
+        input.userId,
+        'cover',
+        `Drafted ${tone} cover letter for "${opportunity.roleTitle}". Pending approval.`,
+        'opportunity',
+        input.opportunityId,
+      )
+    } catch (err) {
+      console.error('[cover] saveObservation error (non-blocking):', String(err))
+    }
+  }
+
   await markSucceeded(input.taskId, {
     output,
     modelKind,
     modelName,
-    toolsUsed: ['db_profile', 'db_achievements'],
+    toolsUsed: ['memory_service', 'db_brief'],
     costUsd: 0,
   })
 
@@ -149,7 +172,7 @@ Generate a cover letter with a subject line.`
     ...output,
     modelKind,
     modelName,
-    toolsUsed: ['db_profile', 'db_achievements'],
+    toolsUsed: ['memory_service', 'db_brief'],
     costUsd: 0,
   }
 }

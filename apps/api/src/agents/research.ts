@@ -9,6 +9,8 @@ import { eq } from 'drizzle-orm'
 import { generateStructured } from '../router/modelRouter.js'
 import { search, webFetch } from './lib/tools.js'
 import { markRunning, markSucceeded, markFailed } from './lib/task.js'
+import type { MemoryService } from '../services/memory.js'
+import type { GraphService } from '../services/graph.js'
 
 // ─────────────────────────────────────────────────────────────
 // Output schema
@@ -29,11 +31,15 @@ type CompanyBrief = z.infer<typeof CompanyBriefSchema>
 // ─────────────────────────────────────────────────────────────
 // Agent entry point
 // ─────────────────────────────────────────────────────────────
-export async function runResearchAgent(input: {
-  taskId: string
-  userId: string
-  companyId: string
-}): Promise<Record<string, unknown>> {
+export async function runResearchAgent(
+  input: {
+    taskId: string
+    userId: string
+    companyId: string
+  },
+  memoryService?: MemoryService,
+  graphService?: GraphService,
+): Promise<Record<string, unknown>> {
   await markRunning(input.taskId)
 
   const [company] = await db
@@ -144,6 +150,32 @@ Extract a concise company brief. Prefer information from the last 12 months.`
     briefId: savedBrief.id,
     companyName: company.name,
     sourcesCount: sources.length,
+  }
+
+  // Graph enrichment: create Company node
+  if (graphService) {
+    try {
+      await graphService.enrich(input.userId, {
+        nodes: [{ type: 'company', entityId: input.companyId, label: company.name }],
+        edges: [],
+      })
+    } catch (err) {
+      console.error('[research] graph enrich error (non-blocking):', String(err))
+    }
+  }
+
+  if (memoryService) {
+    try {
+      await memoryService.saveObservation(
+        input.userId,
+        'research',
+        `Researched ${company.name}: found ${sources.length} sources. Business model: ${brief.business_model ?? 'unknown'}. Funding: ${brief.funding ?? 'unknown'}.`,
+        'company',
+        input.companyId,
+      )
+    } catch (err) {
+      console.error('[research] saveObservation error (non-blocking):', String(err))
+    }
   }
 
   await markSucceeded(input.taskId, {

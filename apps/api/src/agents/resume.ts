@@ -4,13 +4,15 @@
 // Validator: separate LLM pass that checks each bullet against the master profile.
 //   - Violations do NOT block the save; they set validated=false and surface in output.
 //   - The API must never return a PDF for an unvalidated resume without an explicit override flag.
-// Writes: resume_versions row
+// Writes: resume_versions row; graph DEMONSTRATES edges (no-fabrication: only for existing HAS_SKILL nodes)
 
 import { z } from 'zod'
 import { db, schema } from '../db/index.js'
 import { eq } from 'drizzle-orm'
 import { generateStructured, complete } from '../router/modelRouter.js'
 import { markRunning, markSucceeded, markFailed } from './lib/task.js'
+import type { MemoryService } from '../services/memory.js'
+import type { GraphService } from '../services/graph.js'
 
 // ─────────────────────────────────────────────────────────────
 // Output schemas
@@ -85,11 +87,15 @@ List only INVALID bullet numbers (e.g., "3, 7") or reply "ALL_VALID" if none are
 // ─────────────────────────────────────────────────────────────
 // Agent entry point
 // ─────────────────────────────────────────────────────────────
-export async function runResumeAgent(input: {
-  taskId: string
-  userId: string
-  opportunityId: string
-}): Promise<Record<string, unknown>> {
+export async function runResumeAgent(
+  input: {
+    taskId: string
+    userId: string
+    opportunityId: string
+  },
+  memoryService?: MemoryService,
+  graphService?: GraphService,
+): Promise<Record<string, unknown>> {
   await markRunning(input.taskId)
 
   const [opportunity] = await db
@@ -102,42 +108,51 @@ export async function runResumeAgent(input: {
     return { error: 'Opportunity not found' }
   }
 
-  // 1. Load candidate data
-  const [profile] = await db
-    .select()
-    .from(schema.profiles)
-    .where(eq(schema.profiles.userId, input.userId))
+  // 1. Load candidate data via MemoryService if available, else direct DB
+  let profileFacts: string
+  let userSkillNames: string[]
 
-  const achievements = await db
-    .select()
-    .from(schema.achievements)
-    .where(eq(schema.achievements.userId, input.userId))
+  if (memoryService) {
+    const ctx = await memoryService.assembleContext(input.userId, {
+      entityType: 'opportunity',
+      entityId: input.opportunityId,
+    })
+    profileFacts = JSON.stringify({
+      masterResume: (ctx.profile as Record<string, unknown>)?.masterResume ?? {},
+      achievements: ctx.achievements,
+      skills: ctx.skills,
+    })
+    userSkillNames = ctx.skills.map((s) => s.toLowerCase())
+  } else {
+    const [profile] = await db
+      .select()
+      .from(schema.profiles)
+      .where(eq(schema.profiles.userId, input.userId))
 
-  const skills = await db
-    .select()
-    .from(schema.skills)
-    .where(eq(schema.skills.userId, input.userId))
+    const achievements = await db
+      .select()
+      .from(schema.achievements)
+      .where(eq(schema.achievements.userId, input.userId))
 
-  if (!profile && achievements.length === 0) {
-    await markFailed(input.taskId, 'No profile or achievements found — cannot tailor resume')
-    return { error: 'No profile data found' }
+    const skills = await db
+      .select()
+      .from(schema.skills)
+      .where(eq(schema.skills.userId, input.userId))
+
+    if (!profile && achievements.length === 0) {
+      await markFailed(input.taskId, 'No profile or achievements found — cannot tailor resume')
+      return { error: 'No profile data found' }
+    }
+
+    profileFacts = JSON.stringify({
+      masterResume: profile?.masterResume ?? {},
+      achievements: achievements.map((a) => ({ id: a.id, summary: a.summary, detail: a.detail, skills: a.skills })),
+      skills: skills.map((s) => s.name),
+    })
+    userSkillNames = skills.map((s) => s.name.toLowerCase())
   }
 
-  // 2. Build the canonical facts object the LLM is allowed to use
-  const profileFacts = JSON.stringify({
-    masterResume: profile?.masterResume ?? {},
-    achievements: achievements.map((a) => ({
-      id: a.id,
-      summary: a.summary,
-      detail: a.detail,
-      skills: a.skills,
-    })),
-    skills: skills.map((s) => s.name),
-  })
-
-  const userSkillNames = skills.map((s) => s.name.toLowerCase())
-
-  // 3. Determine version label
+  // 2. Determine version label
   const existing = await db
     .select()
     .from(schema.resumeVersions)
@@ -149,7 +164,7 @@ export async function runResumeAgent(input: {
     .replace(/\s+/g, '_')
     .slice(0, 20)}`
 
-  // 4. Generate tailored resume
+  // 3. Generate tailored resume
   const prompt = `You tailor an existing resume to a job. You may REFRAME, REORDER, and EMPHASIZE the candidate's real experience — you may NOT invent employers, titles, dates, degrees, metrics, or skills. Every line must be supported by a fact present in the master profile. Optimize for ATS: mirror the JD's exact skill keywords WHERE the candidate genuinely has them. Quantify using only metrics already in the profile.
 
 Job: ${opportunity.roleTitle}
@@ -181,7 +196,7 @@ Generate a tailored resume. Label: "${label}". ATS score: how well it matches th
     return { error: `Resume generation failed: ${msg}` }
   }
 
-  // 5. Run no-fabrication validator (non-blocking — violations flag the record, not block it)
+  // 4. Run no-fabrication validator
   let valid = false
   let violations: string[] = []
 
@@ -190,12 +205,11 @@ Generate a tailored resume. Label: "${label}". ATS score: how well it matches th
     valid = result.valid
     violations = result.violations
   } catch (err) {
-    // Validator failure is logged but does not block the save
     violations = [`Validator error: ${err instanceof Error ? err.message : String(err)}`]
     valid = false
   }
 
-  // 6. Persist resume version (always saved; validated flag signals trustworthiness)
+  // 5. Persist resume version
   const [version] = await db
     .insert(schema.resumeVersions)
     .values({
@@ -219,11 +233,56 @@ Generate a tailored resume. Label: "${label}". ATS score: how well it matches th
       : `Resume not validated — ${violations.length} issue(s) found. Violations: ${violations.join('; ')}`,
   }
 
+  // 6. Graph enrichment: DEMONSTRATES edges — no-fabrication invariant:
+  //    only for skills already in the user's HAS_SKILL graph edges
+  if (graphService && resume.keywords_targeted.length > 0) {
+    try {
+      const validatedKeywords = resume.keywords_targeted.filter((kw) =>
+        userSkillNames.includes(kw.toLowerCase()),
+      )
+      if (validatedKeywords.length > 0) {
+        await graphService.enrich(input.userId, {
+          nodes: [
+            { type: 'resume', entityId: version.id, label: resume.label },
+            ...validatedKeywords.map((kw) => ({ type: 'skill', label: kw })),
+          ],
+          edges: validatedKeywords.map((kw) => ({
+            fromNodeType: 'resume',
+            fromEntityId: version.id,
+            fromLabel: resume.label,
+            toNodeType: 'skill',
+            toLabel: kw,
+            relationship: 'DEMONSTRATES',
+            evidence: [{ source: 'resume_agent', opportunityId: input.opportunityId, label: resume.label }],
+            confidence: valid ? 1.0 : 0.7,
+          })),
+        })
+      }
+    } catch (err) {
+      console.error('[resume] graph enrich error (non-blocking):', String(err))
+    }
+  }
+
+  // 7. Save observation
+  if (memoryService) {
+    try {
+      await memoryService.saveObservation(
+        input.userId,
+        'resume',
+        `Tailored resume "${resume.label}" for ${opportunity.roleTitle}. ATS score: ${resume.ats_score}. Validated: ${valid}.`,
+        'resume',
+        version.id,
+      )
+    } catch (err) {
+      console.error('[resume] saveObservation error (non-blocking):', String(err))
+    }
+  }
+
   await markSucceeded(input.taskId, {
     output,
     modelKind,
     modelName,
-    toolsUsed: ['db_profile', 'db_achievements', 'resume_validator'],
+    toolsUsed: ['memory_service', 'resume_validator', 'graph_enrich'],
     costUsd: 0,
   })
 
@@ -231,7 +290,7 @@ Generate a tailored resume. Label: "${label}". ATS score: how well it matches th
     ...output,
     modelKind,
     modelName,
-    toolsUsed: ['db_profile', 'db_achievements', 'resume_validator'],
+    toolsUsed: ['memory_service', 'resume_validator', 'graph_enrich'],
     costUsd: 0,
   }
 }

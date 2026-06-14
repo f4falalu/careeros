@@ -1,30 +1,25 @@
 // VVP Agent — Value Validation Project: two-step flow.
 // Step 1 (propose): given company brief + role → propose 2-3 angles.
 // Step 2 (generate): given a vvpId + chosen angle → produce the full artifact.
-// Guardrails: premises must cite real company facts (no model-memory assertions).
-// Writes: vvps row (phase='proposal' → updated to phase='artifact')
+// Writes: vvps row; graph DEMONSTRATES edges for skills demonstrated; Qdrant vvp_context
 
 import { z } from 'zod'
 import { db, schema } from '../db/index.js'
 import { eq } from 'drizzle-orm'
-import { generateStructured } from '../router/modelRouter.js'
+import { generateStructured, embed } from '../router/modelRouter.js'
 import { search, webFetch } from './lib/tools.js'
 import { markRunning, markSucceeded, markFailed } from './lib/task.js'
+import { qdrantUpsert } from '../lib/qdrant.js'
+import { randomUUID } from 'crypto'
+import type { MemoryService } from '../services/memory.js'
+import type { GraphService } from '../services/graph.js'
 
 // ─────────────────────────────────────────────────────────────
 // Schemas
 // ─────────────────────────────────────────────────────────────
 
 const VvpAngleSchema = z.object({
-  kind: z.enum([
-    'audit',
-    'growth_strategy',
-    'automation',
-    'market_analysis',
-    'product_improvement',
-    'analytics_dashboard',
-    'other',
-  ]),
+  kind: z.enum(['audit', 'growth_strategy', 'automation', 'market_analysis', 'product_improvement', 'analytics_dashboard', 'other']),
   title: z.string(),
   premise: z.string(),
   why_it_lands: z.string(),
@@ -37,25 +32,24 @@ const VvpProposalSchema = z.object({
 const VvpArtifactSchema = z.object({
   title: z.string(),
   executive_summary: z.string(),
-  sections: z.array(
-    z.object({
-      heading: z.string(),
-      body: z.string(),
-    }),
-  ),
+  sections: z.array(z.object({ heading: z.string(), body: z.string() })),
   key_recommendations: z.array(z.string()),
   next_steps: z.array(z.string()),
+  skills_demonstrated: z.array(z.string()).optional(),
 })
 
 // ─────────────────────────────────────────────────────────────
 // Step 1 — Propose angles
 // ─────────────────────────────────────────────────────────────
 
-export async function runVvpProposeAgent(input: {
-  taskId: string
-  userId: string
-  opportunityId: string
-}): Promise<Record<string, unknown>> {
+export async function runVvpProposeAgent(
+  input: {
+    taskId: string
+    userId: string
+    opportunityId: string
+  },
+  memoryService?: MemoryService,
+): Promise<Record<string, unknown>> {
   await markRunning(input.taskId)
 
   const [opportunity] = await db
@@ -68,7 +62,7 @@ export async function runVvpProposeAgent(input: {
     return { error: 'Opportunity not found' }
   }
 
-  // 1. Load company brief (if available)
+  // 1. Load company brief
   let briefContent: Record<string, unknown> = {}
   let briefSources: Array<{ title: string; url: string }> = []
 
@@ -86,7 +80,7 @@ export async function runVvpProposeAgent(input: {
 
   // 2. Supplement with a fresh search if brief is missing or thin
   const toolsUsed: string[] = ['db_brief']
-  let supplementSnippets: string[] = []
+  const supplementSnippets: string[] = []
 
   if (Object.keys(briefContent).length === 0 && opportunity.companyId) {
     const [company] = await db
@@ -165,23 +159,28 @@ Propose 2-3 concrete VVP angles.`
       kind: firstAngle.kind,
       format: 'report',
       title: `VVP Proposals — ${opportunity.roleTitle}`,
-      content: {
-        phase: 'proposal',
-        proposals: proposal.angles,
-      } as unknown as Record<string, unknown>,
+      content: { phase: 'proposal', proposals: proposal.angles } as unknown as Record<string, unknown>,
       sources: briefSources as unknown as Record<string, unknown>[],
     })
     .returning()
 
-  const output = {
-    vvpId: saved.id,
-    phase: 'proposal',
-    proposals: proposal.angles,
-    sourcesCount: briefSources.length,
+  // Save observation
+  if (memoryService) {
+    try {
+      await memoryService.saveObservation(
+        input.userId,
+        'vvp_propose',
+        `Proposed ${proposal.angles.length} VVP angles for ${opportunity.roleTitle}: ${proposal.angles.map((a) => a.title).join(', ')}.`,
+        'vvp',
+        saved.id,
+      )
+    } catch (err) {
+      console.error('[vvp_propose] saveObservation error (non-blocking):', String(err))
+    }
   }
 
+  const output = { vvpId: saved.id, phase: 'proposal', proposals: proposal.angles, sourcesCount: briefSources.length }
   await markSucceeded(input.taskId, { output, modelKind, modelName, toolsUsed, costUsd: 0 })
-
   return { ...output, modelKind, modelName, toolsUsed, costUsd: 0 }
 }
 
@@ -189,12 +188,16 @@ Propose 2-3 concrete VVP angles.`
 // Step 2 — Generate artifact from a selected angle
 // ─────────────────────────────────────────────────────────────
 
-export async function runVvpGenerateAgent(input: {
-  taskId: string
-  userId: string
-  vvpId: string
-  angleIndex: number
-}): Promise<Record<string, unknown>> {
+export async function runVvpGenerateAgent(
+  input: {
+    taskId: string
+    userId: string
+    vvpId: string
+    angleIndex: number
+  },
+  memoryService?: MemoryService,
+  graphService?: GraphService,
+): Promise<Record<string, unknown>> {
   await markRunning(input.taskId)
 
   const [vvp] = await db
@@ -220,8 +223,9 @@ export async function runVvpGenerateAgent(input: {
     return { error: `No angle at index ${input.angleIndex}` }
   }
 
-  // Load opportunity + profile for context
+  // Load context
   let opportunityContext = ''
+  let opportunityId: string | null = vvp.opportunityId ?? null
   if (vvp.opportunityId) {
     const [opp] = await db
       .select()
@@ -232,25 +236,24 @@ export async function runVvpGenerateAgent(input: {
     }
   }
 
-  const [profile] = await db
-    .select()
-    .from(schema.profiles)
-    .where(eq(schema.profiles.userId, input.userId))
+  // Load profile via MemoryService if available
+  let profileContext: string
+  if (memoryService) {
+    const ctx = await memoryService.assembleContext(input.userId)
+    profileContext =
+      ctx.achievements.length > 0
+        ? ctx.achievements.slice(0, 5).map((a) => a.summary).join('\n')
+        : JSON.stringify((ctx.profile as Record<string, unknown>)?.masterResume ?? {}).slice(0, 1_000)
+  } else {
+    const [profile] = await db.select().from(schema.profiles).where(eq(schema.profiles.userId, input.userId))
+    const achievements = await db.select().from(schema.achievements).where(eq(schema.achievements.userId, input.userId))
+    profileContext =
+      achievements.length > 0
+        ? achievements.slice(0, 5).map((a) => a.summary).join('\n')
+        : JSON.stringify(profile?.masterResume ?? {}).slice(0, 1_000)
+  }
 
-  const achievements = await db
-    .select()
-    .from(schema.achievements)
-    .where(eq(schema.achievements.userId, input.userId))
-
-  const profileContext =
-    achievements.length > 0
-      ? achievements
-          .slice(0, 5)
-          .map((a) => a.summary)
-          .join('\n')
-      : JSON.stringify(profile?.masterResume ?? {}).slice(0, 1_000)
-
-  // Load brief sources for grounding
+  // Load brief sources
   let briefSources: string[] = []
   if (vvp.companyId) {
     const [brief] = await db
@@ -262,9 +265,7 @@ export async function runVvpGenerateAgent(input: {
       briefSources = [
         bc.business_model ? `Business model: ${bc.business_model}` : null,
         bc.funding ? `Funding: ${bc.funding}` : null,
-        Array.isArray(bc.products) && bc.products.length > 0
-          ? `Products: ${(bc.products as string[]).join(', ')}`
-          : null,
+        Array.isArray(bc.products) && bc.products.length > 0 ? `Products: ${(bc.products as string[]).join(', ')}` : null,
         Array.isArray(bc.recent_news) && bc.recent_news.length > 0
           ? `Recent news: ${(bc.recent_news as string[]).slice(0, 3).join('. ')}`
           : null,
@@ -295,6 +296,8 @@ Write a complete, compelling VVP document (500-800 words) that:
 4. Quantifies the expected impact where possible
 5. Closes with concrete next steps
 
+Also include a "skills_demonstrated" array listing the core skills this VVP showcases.
+
 Do NOT invent company metrics or candidate credentials not provided above.`
 
   let artifact: z.infer<typeof VvpArtifactSchema>
@@ -316,34 +319,73 @@ Do NOT invent company metrics or candidate credentials not provided above.`
     return { error: `VVP generation failed: ${msg}` }
   }
 
-  // Update the VVP row with the full artifact
+  // Update the VVP row
   await db
     .update(schema.vvps)
     .set({
       kind: angle.kind,
       title: artifact.title,
-      content: {
-        phase: 'artifact',
-        angle,
-        artifact,
-      } as unknown as Record<string, unknown>,
+      content: { phase: 'artifact', angle, artifact } as unknown as Record<string, unknown>,
     })
     .where(eq(schema.vvps.id, input.vvpId))
 
-  const output = {
-    vvpId: vvp.id,
-    phase: 'artifact',
-    title: artifact.title,
-    kind: angle.kind,
+  // Graph enrichment: DEMONSTRATES edges for skills this VVP shows
+  if (graphService && artifact.skills_demonstrated && artifact.skills_demonstrated.length > 0) {
+    try {
+      await graphService.enrich(input.userId, {
+        nodes: [
+          { type: 'vvp', entityId: input.vvpId, label: artifact.title },
+          ...artifact.skills_demonstrated.map((s) => ({ type: 'skill', label: s })),
+        ],
+        edges: artifact.skills_demonstrated.map((s) => ({
+          fromNodeType: 'vvp',
+          fromEntityId: input.vvpId,
+          fromLabel: artifact.title,
+          toNodeType: 'skill',
+          toLabel: s,
+          relationship: 'DEMONSTRATES',
+          evidence: [{ source: 'vvp_generate_agent', opportunityId, angleKind: angle.kind }],
+        })),
+      })
+    } catch (err) {
+      console.error('[vvp_generate] graph enrich error (non-blocking):', String(err))
+    }
   }
 
-  await markSucceeded(input.taskId, {
-    output,
-    modelKind,
-    modelName,
-    toolsUsed: ['db_brief', 'db_profile'],
-    costUsd: 0,
-  })
+  // Save to Qdrant vvp_context
+  try {
+    const vvpText = `VVP: ${artifact.title}. ${artifact.executive_summary.slice(0, 300)}`
+    const vector = await embed(vvpText)
+    await qdrantUpsert('vvp_context', randomUUID(), vector, {
+      userId: input.userId,
+      entityType: 'vvp',
+      entityId: input.vvpId,
+      content: vvpText,
+      channel: null,
+      agentName: 'vvp_generate',
+      createdAt: new Date().toISOString(),
+      kind: angle.kind,
+    })
+  } catch (err) {
+    console.error('[vvp_generate] qdrant upsert error (non-blocking):', String(err))
+  }
 
-  return { ...output, modelKind, modelName, toolsUsed: ['db_brief', 'db_profile'], costUsd: 0 }
+  // Save observation
+  if (memoryService) {
+    try {
+      await memoryService.saveObservation(
+        input.userId,
+        'vvp_generate',
+        `Generated VVP "${artifact.title}" (${angle.kind}). Skills demonstrated: ${(artifact.skills_demonstrated ?? []).join(', ')}.`,
+        'vvp',
+        input.vvpId,
+      )
+    } catch (err) {
+      console.error('[vvp_generate] saveObservation error (non-blocking):', String(err))
+    }
+  }
+
+  const output = { vvpId: vvp.id, phase: 'artifact', title: artifact.title, kind: angle.kind }
+  await markSucceeded(input.taskId, { output, modelKind, modelName, toolsUsed: ['db_brief', 'memory_service', 'graph_enrich'], costUsd: 0 })
+  return { ...output, modelKind, modelName, toolsUsed: ['db_brief', 'memory_service'], costUsd: 0 }
 }

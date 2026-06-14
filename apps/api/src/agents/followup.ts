@@ -3,6 +3,7 @@ import { db, schema } from '../db/index.js'
 import { eq } from 'drizzle-orm'
 import { generateStructured } from '../router/modelRouter.js'
 import { markRunning, markSucceeded, markFailed } from './lib/task.js'
+import type { MemoryService } from '../services/memory.js'
 
 // ─────────────────────────────────────────────────────────────
 // Schemas
@@ -23,11 +24,14 @@ const FollowUpSetSchema = z.object({
 // Follow-up Agent
 // ─────────────────────────────────────────────────────────────
 
-export async function runFollowupAgent(input: {
-  taskId: string
-  userId: string
-  outreachId: string
-}): Promise<Record<string, unknown>> {
+export async function runFollowupAgent(
+  input: {
+    taskId: string
+    userId: string
+    outreachId: string
+  },
+  memoryService?: MemoryService,
+): Promise<Record<string, unknown>> {
   await markRunning(input.taskId)
 
   const [outreach] = await db
@@ -116,6 +120,20 @@ Day 14: graceful final check-in that closes the loop without burning the bridge`
     outreachId: input.outreachId,
     followUpIds: inserted.map((r) => r.id),
     count: inserted.length,
+  }
+
+  if (memoryService) {
+    try {
+      await memoryService.saveObservation(
+        input.userId,
+        'followup',
+        `Drafted ${inserted.length} follow-up messages for outreach ${input.outreachId} (day 3, 7, 14).`,
+        'outreach',
+        input.outreachId,
+      )
+    } catch (err) {
+      console.error('[followup] saveObservation error (non-blocking):', String(err))
+    }
   }
 
   await markSucceeded(input.taskId, {

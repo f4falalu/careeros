@@ -14,6 +14,7 @@ import {
   Mic,
   BarChart2,
   User,
+  Search,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { LucideIcon } from 'lucide-react'
@@ -22,7 +23,8 @@ type NavItem = { href: string; label: string; icon: LucideIcon; disabled?: boole
 
 const nav: NavItem[] = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
-  { href: '/opportunities', label: 'Jobs', icon: Briefcase },
+  { href: '/jobs', label: 'Jobs', icon: Search },
+  { href: '/opportunities', label: 'Pipeline', icon: Briefcase },
   { href: '/profile', label: 'Profile', icon: User },
   { href: '/resume', label: 'Resume Studio', icon: FileText },
   { href: '/vvp', label: 'VVP Workspace', icon: Layers },
@@ -56,7 +58,7 @@ export function Sidebar() {
           Main Menu
         </p>
         {nav.map(({ href, label, icon: Icon, disabled }) => {
-          const active = pathname === href
+          const active = href === '/' ? pathname === '/' : pathname.startsWith(href)
           return (
             <Link
               key={href}

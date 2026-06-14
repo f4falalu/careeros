@@ -31,6 +31,9 @@ import { strategistRoutes } from './routes/strategist.js'
 import { autonomyRoutes } from './routes/autonomy.js'
 import { authRoutes } from './routes/auth.js'
 import { resumeImportRoutes } from './routes/resumeImport.js'
+import { conversationRoutes } from './routes/conversations.js'
+import { graphRoutes } from './routes/graph.js'
+import { initQdrant } from './lib/qdrant.js'
 
 const app = new Hono()
 
@@ -117,6 +120,8 @@ app.use('/job-boards/*', authMiddleware)
 app.use('/interviews/*', authMiddleware)
 app.use('/followups/*', authMiddleware)
 app.use('/strategist/*', authMiddleware)
+app.use('/conversations/*', authMiddleware)
+app.use('/graph/*', authMiddleware)
 
 // ── Mount route handlers ──────────────────────────────────────
 app.route('/profile', profileRoutes)
@@ -145,6 +150,9 @@ app.route('/strategist', strategistRoutes)
 app.route('/', autonomyRoutes)
 // Phase 5 (foundation) auth scaffold — public (register/login) + session-guarded (me/logout)
 app.route('/auth', authRoutes)
+// v2 intelligence routes
+app.route('/', conversationRoutes)
+app.route('/', graphRoutes)
 
 // ── Create Node HTTP server + attach WebSocket hub ────────────
 const port = 8000
@@ -194,6 +202,9 @@ createWsHub(server)
 server.listen(port, () => {
   console.log(`CareerOS API on http://localhost:${port}`)
   console.log(`WebSocket available at ws://localhost:${port}/ws`)
+
+  // Initialize Qdrant collections (soft-fail — API still starts if Qdrant is down)
+  initQdrant().catch((err) => console.error('[qdrant] init failed (non-fatal):', err))
 
   // Start async workers (after server is bound so port is confirmed open)
   startAgentWorker()

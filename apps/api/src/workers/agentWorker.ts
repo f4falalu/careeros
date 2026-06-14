@@ -5,6 +5,8 @@ import { db, schema } from '../db/index.js'
 import { eq } from 'drizzle-orm'
 import Redis from 'ioredis'
 import { serializeAgentTask } from '../lib/serialize.js'
+import { notifyUser, buildTaskNotification } from '../channels/notify.js'
+import { memoryService, graphService } from '../services/index.js'
 
 // ── Redis pub/sub helper ──────────────────────────────────────────────────────
 
@@ -93,6 +95,8 @@ export function startAgentWorker() {
                 text?: string
                 filePath?: string
               },
+              memoryService,
+              graphService,
             )
             break
           }
@@ -101,6 +105,8 @@ export function startAgentWorker() {
             const { runResearchAgent } = await import('../agents/research.js')
             result = await runResearchAgent(
               jobData as { taskId: string; userId: string; companyId: string },
+              memoryService,
+              graphService,
             )
             break
           }
@@ -109,6 +115,8 @@ export function startAgentWorker() {
             const { runMatchAgent } = await import('../agents/match.js')
             result = await runMatchAgent(
               jobData as { taskId: string; userId: string; opportunityId: string },
+              memoryService,
+              graphService,
             )
             break
           }
@@ -117,6 +125,8 @@ export function startAgentWorker() {
             const { runResumeAgent } = await import('../agents/resume.js')
             result = await runResumeAgent(
               jobData as { taskId: string; userId: string; opportunityId: string },
+              memoryService,
+              graphService,
             )
             break
           }
@@ -130,6 +140,7 @@ export function startAgentWorker() {
                 opportunityId: string
                 tone?: string
               },
+              memoryService,
             )
             break
           }
@@ -152,6 +163,7 @@ export function startAgentWorker() {
             const { runVvpProposeAgent } = await import('../agents/vvp.js')
             result = await runVvpProposeAgent(
               jobData as { taskId: string; userId: string; opportunityId: string },
+              memoryService,
             )
             break
           }
@@ -160,6 +172,8 @@ export function startAgentWorker() {
             const { runVvpGenerateAgent } = await import('../agents/vvp.js')
             result = await runVvpGenerateAgent(
               jobData as { taskId: string; userId: string; vvpId: string; angleIndex: number },
+              memoryService,
+              graphService,
             )
             break
           }
@@ -175,6 +189,8 @@ export function startAgentWorker() {
                 channel?: string
                 contactId?: string
               },
+              memoryService,
+              graphService,
             )
             break
           }
@@ -183,6 +199,8 @@ export function startAgentWorker() {
             const { runInterviewBriefAgent } = await import('../agents/interview.js')
             result = await runInterviewBriefAgent(
               jobData as { taskId: string; userId: string; applicationId: string },
+              memoryService,
+              graphService,
             )
             break
           }
@@ -205,6 +223,7 @@ export function startAgentWorker() {
             const { runFollowupAgent } = await import('../agents/followup.js')
             result = await runFollowupAgent(
               jobData as { taskId: string; userId: string; outreachId: string },
+              memoryService,
             )
             break
           }
@@ -213,6 +232,7 @@ export function startAgentWorker() {
             const { runStrategistAgent } = await import('../agents/strategist.js')
             result = await runStrategistAgent(
               jobData as { taskId: string; userId: string },
+              memoryService,
             )
             break
           }
@@ -234,6 +254,7 @@ export function startAgentWorker() {
             const { runEnrichAgent } = await import('../agents/enrich.js')
             result = await runEnrichAgent(
               jobData as { taskId: string; userId: string; contactId: string },
+              memoryService,
             )
             break
           }
@@ -267,6 +288,8 @@ export function startAgentWorker() {
             output: result,
             finishedAt: new Date(),
           })
+          const approvalMsg = buildTaskNotification(job.name, 'needs_approval', result)
+          if (approvalMsg) notifyUser(userId, approvalMsg).catch((e) => console.error('[worker] notify error:', e))
           return result
         }
 
@@ -279,6 +302,9 @@ export function startAgentWorker() {
           toolsUsed: (result.toolsUsed as string[]) ?? [],
           finishedAt: new Date(),
         })
+
+        const successMsg = buildTaskNotification(job.name, 'succeeded', result)
+        if (successMsg) notifyUser(userId, successMsg).catch((e) => console.error('[worker] notify error:', e))
 
         return result
       } catch (err) {

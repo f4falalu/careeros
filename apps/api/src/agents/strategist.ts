@@ -3,6 +3,7 @@ import { db, schema } from '../db/index.js'
 import { eq } from 'drizzle-orm'
 import { generateStructured } from '../router/modelRouter.js'
 import { markRunning, markSucceeded, markFailed } from './lib/task.js'
+import type { MemoryService } from '../services/memory.js'
 
 // ─────────────────────────────────────────────────────────────
 // Schema
@@ -33,10 +34,13 @@ const StrategistReportSchema = z.object({
 // Strategist Agent
 // ─────────────────────────────────────────────────────────────
 
-export async function runStrategistAgent(input: {
-  taskId: string
-  userId: string
-}): Promise<Record<string, unknown>> {
+export async function runStrategistAgent(
+  input: {
+    taskId: string
+    userId: string
+  },
+  memoryService?: MemoryService,
+): Promise<Record<string, unknown>> {
   await markRunning(input.taskId)
 
   const [applications, opportunities, skills] = await Promise.all([
@@ -139,6 +143,19 @@ Be direct and specific. Reference the actual data above.`
       avgMatchScore: avgScore,
       skillGapsAnalyzed: Object.keys(skillGapFreq).length,
     },
+  }
+
+  if (memoryService) {
+    try {
+      const topGaps = report.skill_gaps.slice(0, 3).map((g) => g.skill).join(', ')
+      await memoryService.saveObservation(
+        input.userId,
+        'strategist',
+        `Career strategy analysis: ${applications.length} applications, avg score ${avgScore !== null ? `${avgScore.toFixed(1)}%` : 'N/A'}. Top skill gaps: ${topGaps || 'none'}.`,
+      )
+    } catch (err) {
+      console.error('[strategist] saveObservation error (non-blocking):', String(err))
+    }
   }
 
   await markSucceeded(input.taskId, {

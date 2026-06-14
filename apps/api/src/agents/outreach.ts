@@ -1,16 +1,16 @@
 // Outreach Agent — drafts recruiter/HM/founder/referral messages.
 // Guardrail: always persists as 'draft', needs_approval=true. No send capability.
-// Writes: outreach_messages row (state='draft')
+// Writes: outreach_messages row (state='draft'); graph CONNECTED_TO edge; Qdrant outreach_intelligence
 
 import { z } from 'zod'
 import { db, schema } from '../db/index.js'
 import { eq } from 'drizzle-orm'
-import { generateStructured } from '../router/modelRouter.js'
+import { generateStructured, embed } from '../router/modelRouter.js'
 import { markRunning, markSucceeded, markFailed } from './lib/task.js'
-
-// ─────────────────────────────────────────────────────────────
-// Output schema
-// ─────────────────────────────────────────────────────────────
+import { qdrantUpsert } from '../lib/qdrant.js'
+import { randomUUID } from 'crypto'
+import type { MemoryService } from '../services/memory.js'
+import type { GraphService } from '../services/graph.js'
 
 const OutreachDraftSchema = z.object({
   channel: z.enum(['email', 'linkedin', 'telegram', 'whatsapp', 'other']),
@@ -21,18 +21,18 @@ const OutreachDraftSchema = z.object({
 
 type OutreachDraft = z.infer<typeof OutreachDraftSchema>
 
-// ─────────────────────────────────────────────────────────────
-// Agent entry point
-// ─────────────────────────────────────────────────────────────
-
-export async function runOutreachAgent(input: {
-  taskId: string
-  userId: string
-  opportunityId: string
-  contactRole?: string
-  channel?: string
-  contactId?: string
-}): Promise<Record<string, unknown>> {
+export async function runOutreachAgent(
+  input: {
+    taskId: string
+    userId: string
+    opportunityId: string
+    contactRole?: string
+    channel?: string
+    contactId?: string
+  },
+  memoryService?: MemoryService,
+  graphService?: GraphService,
+): Promise<Record<string, unknown>> {
   await markRunning(input.taskId)
 
   const [opportunity] = await db
@@ -45,27 +45,29 @@ export async function runOutreachAgent(input: {
     return { error: 'Opportunity not found' }
   }
 
-  // 1. Load candidate profile + tone prefs
-  const [profile] = await db
-    .select()
-    .from(schema.profiles)
-    .where(eq(schema.profiles.userId, input.userId))
+  // 1. Load candidate profile via MemoryService if available
+  let profileSnippet: string
+  let toneDefault: string
 
-  const achievements = await db
-    .select()
-    .from(schema.achievements)
-    .where(eq(schema.achievements.userId, input.userId))
-
-  const tonePrefs = (profile?.tonePrefs as Record<string, unknown> | null) ?? {}
-  const toneDefault = (tonePrefs.default as string) ?? 'warm'
-
-  const profileSnippet =
-    achievements.length > 0
-      ? achievements
-          .slice(0, 4)
-          .map((a) => a.summary)
-          .join('\n')
-      : JSON.stringify(profile?.masterResume ?? {}).slice(0, 800)
+  if (memoryService) {
+    const ctx = await memoryService.assembleContext(input.userId, {
+      entityType: 'opportunity',
+      entityId: input.opportunityId,
+    })
+    toneDefault = ((ctx.profile as Record<string, unknown>)?.tonePrefs as Record<string, unknown>)?.default as string ?? 'warm'
+    profileSnippet =
+      ctx.achievements.length > 0
+        ? ctx.achievements.slice(0, 4).map((a) => a.summary).join('\n')
+        : JSON.stringify((ctx.profile as Record<string, unknown>)?.masterResume ?? {}).slice(0, 800)
+  } else {
+    const [profile] = await db.select().from(schema.profiles).where(eq(schema.profiles.userId, input.userId))
+    const achievements = await db.select().from(schema.achievements).where(eq(schema.achievements.userId, input.userId))
+    toneDefault = ((profile?.tonePrefs as Record<string, unknown> | null)?.default as string) ?? 'warm'
+    profileSnippet =
+      achievements.length > 0
+        ? achievements.slice(0, 4).map((a) => a.summary).join('\n')
+        : JSON.stringify(profile?.masterResume ?? {}).slice(0, 800)
+  }
 
   // 2. Load company brief for hooks
   let briefSnippet = ''
@@ -92,8 +94,9 @@ export async function runOutreachAgent(input: {
     }
   }
 
-  // 3. Load contact details (optional)
+  // 3. Load contact details
   let contactContext = ''
+  let contactName: string | null = null
   if (input.contactId) {
     const [contact] = await db
       .select()
@@ -101,6 +104,7 @@ export async function runOutreachAgent(input: {
       .where(eq(schema.contacts.id, input.contactId))
 
     if (contact) {
+      contactName = contact.name
       contactContext = `Contact: ${contact.name}${contact.title ? ` (${contact.title})` : ''}`
     }
   }
@@ -148,7 +152,7 @@ Rules:
     return { error: `Outreach draft failed: ${msg}` }
   }
 
-  // 5. Persist as draft — state is always 'draft', never sent automatically
+  // 5. Persist as draft
   const [saved] = await db
     .insert(schema.outreachMessages)
     .values({
@@ -161,6 +165,73 @@ Rules:
       state: 'draft',
     })
     .returning()
+
+  // 6. Graph enrichment: CONNECTED_TO edge for recruiter/contact
+  if (graphService && input.contactId && contactName) {
+    try {
+      await graphService.enrich(input.userId, {
+        nodes: [
+          { type: 'user', label: 'User', entityId: input.userId },
+          { type: 'recruiter', entityId: input.contactId, label: contactName },
+        ],
+        edges: [
+          {
+            fromNodeType: 'user',
+            fromEntityId: input.userId,
+            fromLabel: 'User',
+            toNodeType: 'recruiter',
+            toEntityId: input.contactId,
+            toLabel: contactName,
+            relationship: 'CONNECTED_TO',
+            evidence: [
+              {
+                source: 'outreach_agent',
+                channel: draft.channel,
+                contactRole,
+                opportunityId: input.opportunityId,
+                sentiment: 'outreach_initiated',
+              },
+            ],
+          },
+        ],
+      })
+    } catch (err) {
+      console.error('[outreach] graph enrich error (non-blocking):', String(err))
+    }
+  }
+
+  // 7. Save to Qdrant outreach_intelligence
+  try {
+    const outreachText = `Outreach to ${contactRole} at ${opportunity.roleTitle}. Channel: ${channel}. ${draft.body.slice(0, 300)}`
+    const vector = await embed(outreachText)
+    await qdrantUpsert('outreach_intelligence', randomUUID(), vector, {
+      userId: input.userId,
+      entityType: 'outreach',
+      entityId: saved.id,
+      content: outreachText,
+      channel: draft.channel,
+      agentName: 'outreach',
+      createdAt: new Date().toISOString(),
+      contactRole,
+    })
+  } catch (err) {
+    console.error('[outreach] qdrant upsert error (non-blocking):', String(err))
+  }
+
+  // 8. Save observation
+  if (memoryService) {
+    try {
+      await memoryService.saveObservation(
+        input.userId,
+        'outreach',
+        `Drafted ${contactRole} outreach for ${opportunity.roleTitle} via ${channel}. Pending approval.`,
+        'outreach',
+        saved.id,
+      )
+    } catch (err) {
+      console.error('[outreach] saveObservation error (non-blocking):', String(err))
+    }
+  }
 
   const output = {
     outreachId: saved.id,
@@ -176,15 +247,9 @@ Rules:
     output,
     modelKind,
     modelName,
-    toolsUsed: ['db_profile', 'db_brief'],
+    toolsUsed: ['memory_service', 'db_brief', 'graph_enrich', 'qdrant_outreach'],
     costUsd: 0,
   })
 
-  return {
-    ...output,
-    modelKind,
-    modelName,
-    toolsUsed: ['db_profile', 'db_brief'],
-    costUsd: 0,
-  }
+  return { ...output, modelKind, modelName, toolsUsed: ['memory_service', 'db_brief'], costUsd: 0 }
 }

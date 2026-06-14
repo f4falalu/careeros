@@ -34,6 +34,12 @@ const vector = customType<{ data: number[]; driverData: string }>({
 // ─────────────────────────────────────────────────────────────
 // Enums
 // ─────────────────────────────────────────────────────────────
+export const graphNodeTypeEnum = pgEnum('graph_node_type', [
+  'user', 'skill', 'experience', 'project', 'company', 'opportunity',
+  'application', 'recruiter', 'interview', 'goal', 'interest', 'resume', 'vvp', 'message',
+])
+export const conversationChannelEnum = pgEnum('conversation_channel', ['web', 'telegram', 'whatsapp'])
+export const messageRoleEnum = pgEnum('message_role', ['user', 'assistant', 'system'])
 export const workModelEnum = pgEnum('work_model', ['remote', 'hybrid', 'onsite', 'unknown'])
 export const pipelineStageEnum = pgEnum('pipeline_stage', [
   'saved',
@@ -647,6 +653,120 @@ export const jobBoardSeen = pgTable(
 )
 
 // ─────────────────────────────────────────────────────────────
+// Channel account-link tokens
+// ─────────────────────────────────────────────────────────────
+export const channelLinkTokens = pgTable(
+  'channel_link_tokens',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    channel: text('channel').notNull(),
+    token: text('token').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    usedAt: timestamp('used_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('channel_link_tokens_token').on(t.token)],
+)
+
+// ─────────────────────────────────────────────────────────────
+// Living Career Graph
+// ─────────────────────────────────────────────────────────────
+export const graphNodes = pgTable(
+  'graph_nodes',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    type: graphNodeTypeEnum('type').notNull(),
+    entityId: uuid('entity_id'),
+    label: text('label').notNull(),
+    attributes: jsonb('attributes').notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('graph_nodes_user_type').on(t.userId, t.type)],
+)
+
+export const graphEdges = pgTable(
+  'graph_edges',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    fromNodeId: uuid('from_node_id')
+      .notNull()
+      .references(() => graphNodes.id, { onDelete: 'cascade' }),
+    toNodeId: uuid('to_node_id')
+      .notNull()
+      .references(() => graphNodes.id, { onDelete: 'cascade' }),
+    relationship: text('relationship').notNull(),
+    evidence: jsonb('evidence').notNull().default([]),
+    confidence: numeric('confidence', { precision: 4, scale: 3 }).notNull().default('1.000'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('graph_edges_user_from').on(t.userId, t.fromNodeId),
+    index('graph_edges_user_rel').on(t.userId, t.relationship),
+  ],
+)
+
+export const graphInferences = pgTable(
+  'graph_inferences',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    type: text('type').notNull(),
+    label: text('label').notNull(),
+    confidence: numeric('confidence', { precision: 4, scale: 3 }).notNull(),
+    evidence: jsonb('evidence').notNull().default({}),
+    computedAt: timestamp('computed_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+  },
+  (t) => [index('graph_inferences_user_type').on(t.userId, t.type, t.expiresAt)],
+)
+
+// ─────────────────────────────────────────────────────────────
+// Conversation / Copilot
+// ─────────────────────────────────────────────────────────────
+export const conversations = pgTable(
+  'conversations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    channel: conversationChannelEnum('channel').notNull(),
+    externalThreadId: text('external_thread_id'),
+    workspaceContext: jsonb('workspace_context').notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('conversations_user_channel').on(t.userId, t.channel, t.externalThreadId)],
+)
+
+export const conversationMessages = pgTable(
+  'conversation_messages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+    role: messageRoleEnum('role').notNull(),
+    content: text('content').notNull(),
+    metadata: jsonb('metadata').notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('conversation_messages_conv').on(t.conversationId, t.createdAt)],
+)
+
+// ─────────────────────────────────────────────────────────────
 // Relations
 // ─────────────────────────────────────────────────────────────
 export const usersRelations = relations(users, ({ many, one }) => ({
@@ -701,6 +821,31 @@ export const applicationsRelations = relations(applications, ({ one, many }) => 
 
 export const agentTasksRelations = relations(agentTasks, ({ one }) => ({
   user: one(users, { fields: [agentTasks.userId], references: [users.id] }),
+}))
+
+export const graphNodesRelations = relations(graphNodes, ({ one, many }) => ({
+  user: one(users, { fields: [graphNodes.userId], references: [users.id] }),
+  edgesFrom: many(graphEdges, { relationName: 'edgesFrom' }),
+  edgesTo: many(graphEdges, { relationName: 'edgesTo' }),
+}))
+
+export const graphEdgesRelations = relations(graphEdges, ({ one }) => ({
+  user: one(users, { fields: [graphEdges.userId], references: [users.id] }),
+  fromNode: one(graphNodes, { fields: [graphEdges.fromNodeId], references: [graphNodes.id], relationName: 'edgesFrom' }),
+  toNode: one(graphNodes, { fields: [graphEdges.toNodeId], references: [graphNodes.id], relationName: 'edgesTo' }),
+}))
+
+export const graphInferencesRelations = relations(graphInferences, ({ one }) => ({
+  user: one(users, { fields: [graphInferences.userId], references: [users.id] }),
+}))
+
+export const conversationsRelations = relations(conversations, ({ one, many }) => ({
+  user: one(users, { fields: [conversations.userId], references: [users.id] }),
+  messages: many(conversationMessages),
+}))
+
+export const conversationMessagesRelations = relations(conversationMessages, ({ one }) => ({
+  conversation: one(conversations, { fields: [conversationMessages.conversationId], references: [conversations.id] }),
 }))
 
 // ─────────────────────────────────────────────────────────────
@@ -790,6 +935,9 @@ export type NewJobBoardSource = typeof jobBoardSources.$inferInsert
 export type JobBoardSeen = typeof jobBoardSeen.$inferSelect
 export type NewJobBoardSeen = typeof jobBoardSeen.$inferInsert
 
+export type ChannelLinkToken = typeof channelLinkTokens.$inferSelect
+export type NewChannelLinkToken = typeof channelLinkTokens.$inferInsert
+
 export type WorkExperience = typeof workExperiences.$inferSelect
 export type NewWorkExperience = typeof workExperiences.$inferInsert
 
@@ -798,3 +946,18 @@ export type NewEducation = typeof educations.$inferInsert
 
 export type ProfileProject = typeof profileProjects.$inferSelect
 export type NewProfileProject = typeof profileProjects.$inferInsert
+
+export type GraphNode = typeof graphNodes.$inferSelect
+export type NewGraphNode = typeof graphNodes.$inferInsert
+
+export type GraphEdge = typeof graphEdges.$inferSelect
+export type NewGraphEdge = typeof graphEdges.$inferInsert
+
+export type GraphInference = typeof graphInferences.$inferSelect
+export type NewGraphInference = typeof graphInferences.$inferInsert
+
+export type Conversation = typeof conversations.$inferSelect
+export type NewConversation = typeof conversations.$inferInsert
+
+export type ConversationMessage = typeof conversationMessages.$inferSelect
+export type NewConversationMessage = typeof conversationMessages.$inferInsert

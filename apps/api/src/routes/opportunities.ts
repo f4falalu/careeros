@@ -1,8 +1,9 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { and, eq, lt, desc } from 'drizzle-orm'
+import { and, eq, lt, desc, ilike, gte, inArray } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { enqueueAgent } from '../workers/queue.js'
+import { serializeOpportunity, serializeCompany, serializeMatchScore, serializeApplication } from '../lib/serialize.js'
 
 const app = new Hono()
 
@@ -13,6 +14,13 @@ app.get('/', async (c) => {
   const sourceParam = c.req.query('source')
   const limitParam = parseInt(c.req.query('limit') ?? '50', 10)
   const cursor = c.req.query('cursor') // ISO date string for cursor pagination
+
+  // Discovery filters
+  const workModelParam = c.req.query('work_model')
+  const qParam = c.req.query('q')?.trim()
+  const sinceParam = c.req.query('since') // e.g. '24h', '7d', '30d'
+  const withCompany = c.req.query('with_company') === 'true'
+  const withMatch = c.req.query('with_match') === 'true'
 
   const limit = Math.min(Math.max(1, limitParam), 200)
 
@@ -57,6 +65,20 @@ app.get('/', async (c) => {
     if (sourceParam) {
       conditions.push(eq(schema.opportunities.sourceChannel, sourceParam as 'job_board'))
     }
+    if (workModelParam && ['remote', 'hybrid', 'onsite'].includes(workModelParam)) {
+      conditions.push(eq(schema.opportunities.workModel, workModelParam as 'remote' | 'hybrid' | 'onsite'))
+    }
+    if (qParam) {
+      conditions.push(ilike(schema.opportunities.roleTitle, `%${qParam}%`))
+    }
+    if (sinceParam) {
+      const now = Date.now()
+      const ms = sinceParam === '24h' ? 86_400_000
+                : sinceParam === '7d'  ? 7 * 86_400_000
+                : sinceParam === '30d' ? 30 * 86_400_000
+                : null
+      if (ms) conditions.push(gte(schema.opportunities.createdAt, new Date(now - ms)))
+    }
     rows = await db
       .select()
       .from(schema.opportunities)
@@ -69,7 +91,64 @@ app.get('/', async (c) => {
   const items = hasMore ? rows.slice(0, limit) : rows
   const nextCursor = hasMore ? items[items.length - 1].createdAt.toISOString() : null
 
-  return c.json({ items, next_cursor: nextCursor })
+  // Optionally enrich with company names
+  let companyMap = new Map<string, { name: string; industry?: string | null }>()
+  if (withCompany) {
+    const companyIds = [...new Set(items.map((r) => r.companyId).filter(Boolean) as string[])]
+    if (companyIds.length > 0) {
+      const companies = await db
+        .select({ id: schema.companies.id, name: schema.companies.name, industry: schema.companies.industry })
+        .from(schema.companies)
+        .where(inArray(schema.companies.id, companyIds))
+      companies.forEach((co) => companyMap.set(co.id, co))
+    }
+  }
+
+  // Optionally enrich with latest match scores
+  let matchMap = new Map<string, { score: number; missing_skills: string[]; rationale: string | null; computed_at: string }>()
+  if (withMatch) {
+    const oppIds = items.map((r) => r.id)
+    if (oppIds.length > 0) {
+      // Get latest score per opportunity using a self-join approach: fetch all and dedupe in memory
+      const scores = await db
+        .select()
+        .from(schema.matchScores)
+        .where(inArray(schema.matchScores.opportunityId, oppIds))
+        .orderBy(desc(schema.matchScores.computedAt))
+      // Keep only latest per opportunity
+      scores.forEach((s) => {
+        if (!matchMap.has(s.opportunityId)) {
+          matchMap.set(s.opportunityId, {
+            score: Number(s.score),
+            missing_skills: s.missingSkills ?? [],
+            rationale: s.rationale ?? null,
+            computed_at: s.computedAt.toISOString(),
+          })
+        }
+      })
+    }
+  }
+
+  const enriched = items.map((r) =>
+    serializeOpportunity({
+      ...r,
+      company_name: withCompany ? (companyMap.get(r.companyId ?? '')?.name ?? null) : undefined,
+      company_industry: withCompany ? (companyMap.get(r.companyId ?? '')?.industry ?? null) : undefined,
+      match_score: withMatch ? (matchMap.get(r.id) ?? null) : undefined,
+    }),
+  )
+
+  // When match scores requested, sort by score desc (scored first, then unscored by date)
+  if (withMatch) {
+    enriched.sort((a, b) => {
+      const sa = a.match_score?.score ?? -1
+      const sb = b.match_score?.score ?? -1
+      if (sb !== sa) return sb - sa
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    })
+  }
+
+  return c.json({ items: enriched, next_cursor: nextCursor })
 })
 
 // ── GET /opportunities/:id ────────────────────────────────────
@@ -114,10 +193,10 @@ app.get('/:id', async (c) => {
     .limit(1)
 
   return c.json({
-    ...opportunity,
-    company: company ?? null,
-    match: match ?? null,
-    application: application ?? null,
+    ...serializeOpportunity(opportunity),
+    company: company ? serializeCompany(company) : null,
+    match: match ? serializeMatchScore(match) : null,
+    application: application ? serializeApplication(application) : null,
   })
 })
 
