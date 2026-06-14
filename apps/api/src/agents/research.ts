@@ -42,6 +42,14 @@ export async function runResearchAgent(
 ): Promise<Record<string, unknown>> {
   await markRunning(input.taskId)
 
+  if (memoryService) {
+    try {
+      await memoryService.assembleContext(input.userId)
+    } catch (err) {
+      console.error('[research] assembleContext error (non-blocking):', String(err))
+    }
+  }
+
   const [company] = await db
     .select()
     .from(schema.companies)

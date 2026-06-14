@@ -6,25 +6,23 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 
 // ── Types ─────────────────────────────────────────────────────
 
+interface PendingApproval {
+  type: string
+  entityId: string
+  actions: string[]
+}
+
 interface Message {
   id: string
   role: 'user' | 'assistant'
   content: string
-  pendingApproval?: {
-    type: string
-    entityId: string
-    taskId?: string
-  }
+  pendingApproval?: PendingApproval
 }
 
 interface ConversationResponse {
   messageId: string
   response: string
-  pendingApproval?: {
-    type: string
-    entityId: string
-    actions: string[]
-  }
+  pendingApproval?: PendingApproval
 }
 
 interface HistoryMessage {
@@ -56,22 +54,27 @@ async function sendMessage(content: string, workspaceContext?: Record<string, un
   return res.json()
 }
 
-async function fetchHistory(): Promise<HistoryMessage[]> {
-  const res = await fetch(`${API_URL}/conversations/history?limit=20&channel=web`, {
+async function fetchHistory(limit = 50): Promise<HistoryMessage[]> {
+  const res = await fetch(`${API_URL}/conversations/history?limit=${limit}&channel=web`, {
     headers: { Authorization: `Bearer ${getToken()}` },
   })
   if (!res.ok) return []
   return res.json()
 }
 
-async function approveTask(taskId: string): Promise<void> {
+async function callApprove(
+  messageId: string,
+  action: string,
+  entityId: string,
+  entityType: string,
+): Promise<void> {
   await fetch(`${API_URL}/conversations/approve`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${getToken()}`,
     },
-    body: JSON.stringify({ taskId }),
+    body: JSON.stringify({ messageId, action, entityId, entityType }),
   })
 }
 
@@ -80,8 +83,6 @@ async function approveTask(taskId: string): Promise<void> {
 function useWorkspaceContext(): Record<string, unknown> | undefined {
   const pathname = usePathname()
 
-  // Extract entityType and entityId from common URL patterns:
-  // /opportunities/[id], /applications/[id], /companies/[id]
   const patterns = [
     { re: /\/opportunities\/([^/]+)/, type: 'opportunity' },
     { re: /\/applications\/([^/]+)/, type: 'application' },
@@ -97,20 +98,69 @@ function useWorkspaceContext(): Record<string, unknown> | undefined {
   return undefined
 }
 
+// ── ApprovalCard ──────────────────────────────────────────────
+
+function ApprovalCard({
+  messageId,
+  approval,
+  onSettled,
+}: {
+  messageId: string
+  approval: PendingApproval
+  onSettled: (messageId: string, action: string) => void
+}) {
+  const [pending, setPending] = useState<string | null>(null)
+
+  async function handleAction(action: string) {
+    setPending(action)
+    try {
+      await callApprove(messageId, action, approval.entityId, approval.type)
+      onSettled(messageId, action)
+    } catch {
+      setPending(null)
+    }
+  }
+
+  const labels: Record<string, string> = { approve: 'Approve', review: 'Review', reject: 'Reject' }
+  const variants: Record<string, string> = {
+    approve: 'bg-primary text-primary-foreground',
+    review: 'bg-muted text-foreground border border-border',
+    reject: 'bg-destructive text-destructive-foreground',
+  }
+
+  return (
+    <div className="mt-2 flex flex-wrap gap-2">
+      {approval.actions.map((action) => (
+        <button
+          key={action}
+          onClick={() => handleAction(action)}
+          disabled={pending !== null}
+          className={`rounded px-2 py-1 text-xs hover:opacity-80 disabled:opacity-40 ${variants[action] ?? 'bg-muted text-foreground'}`}
+        >
+          {pending === action ? `${labels[action] ?? action}…` : (labels[action] ?? action)}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 // ── Component ─────────────────────────────────────────────────
+
+const PAGE_SIZE = 50
 
 export function CareerOSCopilot() {
   const [open, setOpen] = useState(false)
   const [input, setInput] = useState('')
   const [messages, setMessages] = useState<Message[]>([])
   const [historyLoaded, setHistoryLoaded] = useState(false)
+  const [historyLimit, setHistoryLimit] = useState(PAGE_SIZE)
   const bottomRef = useRef<HTMLDivElement>(null)
   const workspaceContext = useWorkspaceContext()
 
   // Load history on first open
-  const { data: history } = useQuery({
-    queryKey: ['conversation-history'],
-    queryFn: fetchHistory,
+  const { data: history, refetch: refetchHistory } = useQuery({
+    queryKey: ['conversation-history', historyLimit],
+    queryFn: () => fetchHistory(historyLimit),
     enabled: open && !historyLoaded,
   })
 
@@ -142,26 +192,42 @@ export function CareerOSCopilot() {
           id: data.messageId,
           role: 'assistant',
           content: data.response,
-          ...(data.pendingApproval
-            ? { pendingApproval: { type: data.pendingApproval.type, entityId: data.pendingApproval.entityId } }
-            : {}),
+          ...(data.pendingApproval ? { pendingApproval: data.pendingApproval } : {}),
+        },
+      ])
+    },
+    onError: () => {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `err-${Date.now()}`,
+          role: 'assistant',
+          content: 'Sorry, something went wrong. Please try again.',
         },
       ])
     },
   })
 
-  const approveMutation = useMutation({
-    mutationFn: approveTask,
-    onSuccess: (_, taskId) => {
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.pendingApproval?.taskId === taskId
-            ? { ...m, content: m.content + '\n\n✓ Approved and queued.', pendingApproval: undefined }
-            : m,
-        ),
-      )
-    },
-  })
+  const handleApprovalSettled = useCallback((messageId: string, action: string) => {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === messageId
+          ? {
+              ...m,
+              content: m.content + `\n\n✓ ${action.charAt(0).toUpperCase() + action.slice(1)}d.`,
+              pendingApproval: undefined,
+            }
+          : m,
+      ),
+    )
+  }, [])
+
+  const handleLoadMore = useCallback(() => {
+    const next = historyLimit + PAGE_SIZE
+    setHistoryLimit(next)
+    setHistoryLoaded(false)
+    refetchHistory()
+  }, [historyLimit, refetchHistory])
 
   const handleSend = useCallback(() => {
     const text = input.trim()
@@ -218,6 +284,15 @@ export function CareerOSCopilot() {
 
           {/* Messages */}
           <div className="flex max-h-[420px] flex-col gap-3 overflow-y-auto p-4">
+            {/* Load more: show when we have a full page (likely more exists) */}
+            {messages.length >= historyLimit && (
+              <button
+                onClick={handleLoadMore}
+                className="self-center rounded-md bg-muted px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
+              >
+                Load more
+              </button>
+            )}
             {messages.length === 0 && (
               <p className="text-center text-xs text-muted-foreground">
                 Ask me anything about your career — resumes, opportunities, gaps, strategy.
@@ -236,14 +311,12 @@ export function CareerOSCopilot() {
                   }`}
                 >
                   <p className="whitespace-pre-wrap">{m.content}</p>
-                  {m.pendingApproval?.taskId && (
-                    <button
-                      onClick={() => approveMutation.mutate(m.pendingApproval!.taskId!)}
-                      className="mt-2 rounded bg-primary px-2 py-1 text-xs text-primary-foreground hover:opacity-80"
-                      disabled={approveMutation.isPending}
-                    >
-                      {approveMutation.isPending ? 'Approving...' : 'Approve'}
-                    </button>
+                  {m.pendingApproval && (
+                    <ApprovalCard
+                      messageId={m.id}
+                      approval={m.pendingApproval}
+                      onSettled={handleApprovalSettled}
+                    />
                   )}
                 </div>
               </div>

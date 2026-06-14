@@ -568,6 +568,48 @@ Return ONLY a JSON array of short theme labels (max 5 words each). Example: ["Pr
     }
   }
 
+  // ── getInferences ─────────────────────────────────────────────
+
+  async getInferences(userId: string): Promise<Record<string, Array<{
+    id: string
+    label: string
+    confidence: number
+    evidence: unknown
+    computedAt: Date
+    expiresAt: Date | null
+  }>>> {
+    const rows = await this.db
+      .select()
+      .from(schema.graphInferences)
+      .where(
+        and(
+          eq(schema.graphInferences.userId, userId),
+          or(isNull(schema.graphInferences.expiresAt), gt(schema.graphInferences.expiresAt, new Date())),
+        ),
+      )
+
+    const grouped: Record<string, Array<{
+      id: string
+      label: string
+      confidence: number
+      evidence: unknown
+      computedAt: Date
+      expiresAt: Date | null
+    }>> = {}
+    for (const row of rows) {
+      grouped[row.type] = grouped[row.type] ?? []
+      grouped[row.type].push({
+        id: row.id,
+        label: row.label,
+        confidence: Number(row.confidence),
+        evidence: row.evidence,
+        computedAt: row.computedAt,
+        expiresAt: row.expiresAt,
+      })
+    }
+    return grouped
+  }
+
   // ── enrich ────────────────────────────────────────────────────
 
   async enrich(userId: string, enrichment: GraphEnrichment): Promise<void> {

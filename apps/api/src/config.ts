@@ -27,6 +27,9 @@ export const config = {
   // Communication channels — CareerOS-owned shared bots (users never configure these).
   telegramBotUsername: process.env.TELEGRAM_BOT_USERNAME ?? "CareerOSBot",
   whatsappNumber: process.env.WHATSAPP_NUMBER ?? "",
+
+  // WhatsApp session path for Baileys (local-session, no Meta Business account required).
+  whatsappSessionPath: process.env.WHATSAPP_SESSION_PATH ?? "./wa-session",
 };
 
 // Default local model per tier — see docs/03-RESOURCES.md. Changeable via settings later.

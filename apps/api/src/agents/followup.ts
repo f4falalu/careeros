@@ -34,6 +34,14 @@ export async function runFollowupAgent(
 ): Promise<Record<string, unknown>> {
   await markRunning(input.taskId)
 
+  if (memoryService) {
+    try {
+      await memoryService.assembleContext(input.userId)
+    } catch (err) {
+      console.error('[followup] assembleContext error (non-blocking):', String(err))
+    }
+  }
+
   const [outreach] = await db
     .select()
     .from(schema.outreachMessages)

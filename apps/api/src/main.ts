@@ -22,6 +22,7 @@ import { vvpRoutes } from './routes/vvp.js'
 import { outreachRoutes } from './routes/outreach.js'
 import { contactsRoutes } from './routes/contacts.js'
 import { startTelegramBot } from './channels/telegram.js'
+import { startWhatsappBot } from './channels/whatsapp.js'
 import { startAgentWorker } from './workers/agentWorker.js'
 import { startDiscoveryWorker } from './workers/discoveryWorker.js'
 import { jobBoardsRoutes } from './routes/jobBoards.js'
@@ -210,4 +211,5 @@ server.listen(port, () => {
   startAgentWorker()
   startDiscoveryWorker()
   startTelegramBot().catch((err) => console.error('[telegram] failed to start:', err))
+  startWhatsappBot().catch((err) => console.error('[whatsapp] failed to start:', err))
 })

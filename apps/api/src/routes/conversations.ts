@@ -32,7 +32,7 @@ app.post('/conversations/message', async (c) => {
 // GET /conversations/history?limit=20&channel=web
 app.get('/conversations/history', async (c) => {
   const userId = c.get('userId')
-  const limit = Math.min(parseInt(c.req.query('limit') ?? '20', 10), 100)
+  const limit = Math.min(parseInt(c.req.query('limit') ?? '50', 10), 100)
   const channel = c.req.query('channel') as 'web' | 'telegram' | 'whatsapp' | undefined
 
   const messages = await conversationService.getHistory(userId, { limit, channel })

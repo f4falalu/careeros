@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import type { Bot } from 'grammy'
+import { sendWhatsAppMessage } from './whatsapp.js'
 
 let _telegramBot: Bot | null = null
 
@@ -35,8 +36,11 @@ export async function notifyUser(userId: string, message: string): Promise<void>
   }
 
   if (user.whatsappNumber) {
-    // WhatsApp outbound not yet implemented — pending WhatsApp bot receiver
-    console.log(`[notify] WhatsApp outbound not yet implemented (user ${userId})`)
+    sends.push(
+      sendWhatsAppMessage(user.whatsappNumber, message).catch((err: unknown) => {
+        console.error('[notify] WhatsApp sendMessage failed:', err)
+      }),
+    )
   }
 
   await Promise.all(sends)

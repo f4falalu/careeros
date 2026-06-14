@@ -3,7 +3,7 @@ import { db, schema } from '../db/index.js'
 import { eq } from 'drizzle-orm'
 import { generateStructured } from '../router/modelRouter.js'
 import { markRunning, markSucceeded, markFailed } from './lib/task.js'
-import type { MemoryService } from '../services/memory.js'
+import type { MemoryService, AssembledContext } from '../services/memory.js'
 
 // ─────────────────────────────────────────────────────────────
 // Schema
@@ -43,10 +43,19 @@ export async function runStrategistAgent(
 ): Promise<Record<string, unknown>> {
   await markRunning(input.taskId)
 
-  const [applications, opportunities, skills] = await Promise.all([
+  // Assemble context via MemoryService (satisfies Req 42; provides skills without direct db query)
+  let ctx: AssembledContext | null = null
+  if (memoryService) {
+    try {
+      ctx = await memoryService.assembleContext(input.userId)
+    } catch (err) {
+      console.error('[strategist] assembleContext error (non-blocking):', String(err))
+    }
+  }
+
+  const [applications, opportunities] = await Promise.all([
     db.select().from(schema.applications).where(eq(schema.applications.userId, input.userId)),
     db.select().from(schema.opportunities).where(eq(schema.opportunities.userId, input.userId)),
-    db.select().from(schema.skills).where(eq(schema.skills.userId, input.userId)),
   ])
 
   // Load match scores for each opportunity
@@ -91,7 +100,7 @@ export async function runStrategistAgent(
     .map(([skill, count]) => `${skill} (missing in ${count} opp${count > 1 ? 's' : ''})`)
     .join(', ')
 
-  const currentSkills = skills.map((s) => s.name).join(', ')
+  const currentSkills = (ctx?.skills ?? []).join(', ')
 
   const prompt = `You are a senior career strategist. Analyze this job seeker's pipeline and provide strategic advice.
 

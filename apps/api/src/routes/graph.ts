@@ -1,6 +1,4 @@
 import { Hono } from 'hono'
-import { and, eq, gt, isNull, or } from 'drizzle-orm'
-import { db, schema } from '../db/index.js'
 import { graphService, memoryService } from '../services/index.js'
 
 const app = new Hono()
@@ -41,23 +39,7 @@ app.get('/graph/gaps', async (c) => {
 // GET /graph/inferences — returns non-expired inferences grouped by type
 app.get('/graph/inferences', async (c) => {
   const userId = c.get('userId')
-  const now = new Date()
-  const rows = await db
-    .select()
-    .from(schema.graphInferences)
-    .where(
-      and(
-        eq(schema.graphInferences.userId, userId),
-        or(isNull(schema.graphInferences.expiresAt), gt(schema.graphInferences.expiresAt, now)),
-      ),
-    )
-
-  const grouped = rows.reduce<Record<string, typeof rows>>((acc, row) => {
-    acc[row.type] = acc[row.type] ?? []
-    acc[row.type].push(row)
-    return acc
-  }, {})
-
+  const grouped = await graphService.getInferences(userId)
   return c.json(grouped)
 })
 
@@ -68,24 +50,7 @@ app.post('/graph/infer', async (c) => {
   await graphService.inferWeaknesses(userId)
   await graphService.inferInterests(userId)
   await graphService.inferCareerThemes(userId)
-
-  const now = new Date()
-  const rows = await db
-    .select()
-    .from(schema.graphInferences)
-    .where(
-      and(
-        eq(schema.graphInferences.userId, userId),
-        or(isNull(schema.graphInferences.expiresAt), gt(schema.graphInferences.expiresAt, now)),
-      ),
-    )
-
-  const grouped = rows.reduce<Record<string, typeof rows>>((acc, row) => {
-    acc[row.type] = acc[row.type] ?? []
-    acc[row.type].push(row)
-    return acc
-  }, {})
-
+  const grouped = await graphService.getInferences(userId)
   return c.json(grouped)
 })
 

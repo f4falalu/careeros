@@ -1,12 +1,9 @@
 import { Bot } from 'grammy'
 import { eq, and } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
-import { handleIntake, handleMenuAction } from '../orchestrator/index.js'
 import { setTelegramBotInstance } from './notify.js'
 import { conversationService } from '../services/index.js'
 
-// In-memory session: tracks the last opportunityId per chat so numbered menu replies work.
-const sessions = new Map<number, { opportunityId?: string }>()
 
 async function getUserByChatId(chatId: string) {
   const [user] = await db
@@ -121,39 +118,8 @@ export function createTelegramBot(): Bot {
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text
     const chatId = ctx.chat.id
-    const session = sessions.get(chatId) ?? {}
 
-    // Menu reply: one or more numbers 1-5 separated by whitespace
-    const menuPattern = /^[1-5](\s+[1-5])*$/
-    if (menuPattern.test(text.trim()) && session.opportunityId) {
-      const actionMap = [
-        'tailor_resume',
-        'build_vvp',
-        'draft_outreach',
-        'cover_letter',
-        'mark_applied',
-      ] as const
-      const selected = text.trim().split(/\s+/).map(n => parseInt(n, 10))
-      const actions = selected
-        .map(n => actionMap[n - 1])
-        .filter((a): a is (typeof actionMap)[number] => Boolean(a))
-
-      await ctx.replyWithChatAction('typing')
-      try {
-        const result = await handleMenuAction({
-          opportunityId: session.opportunityId,
-          actions,
-          sourceChannel: 'telegram',
-        })
-        await ctx.reply(result.message)
-      } catch (err) {
-        console.error('[telegram] handleMenuAction error:', err)
-        await ctx.reply('Something went wrong processing your selection. Please try again.')
-      }
-      return
-    }
-
-    // Route all other text through ConversationService (handles intents including URL intake)
+    // Route all text (including numbered menu replies) through ConversationService
     const user = await getUserByChatId(chatId.toString())
     if (!user) {
       await ctx.reply('Please link your CareerOS account first. Use /start <token> from your CareerOS Settings → Channels page.')
@@ -186,15 +152,36 @@ export function createTelegramBot(): Bot {
 
   // ── Document (PDF) messages ───────────────────────────────────────────────
   bot.on('message:document', async (ctx) => {
+    const chatId = ctx.chat.id
     await ctx.replyWithChatAction('typing')
+
+    const user = await getUserByChatId(chatId.toString())
+    if (!user) {
+      await ctx.reply('Please link your CareerOS account first. Use /start <token> from your CareerOS Settings → Channels page.')
+      return
+    }
+
     try {
       const file = await ctx.getFile()
       const filePath = file.file_path ?? ''
-      const result = await handleIntake({ filePath, sourceChannel: 'telegram' })
-      sessions.set(ctx.chat.id, { opportunityId: result.opportunityId })
-      await ctx.reply(result.message, { parse_mode: 'Markdown' })
+      const content = `PDF document received: ${filePath}`
+      const response = await conversationService.handleMessage(
+        user.id,
+        'telegram',
+        content,
+        undefined,
+        chatId.toString(),
+      )
+      if (response.pendingApproval) {
+        await ctx.reply(
+          `${response.response}\n\nReply with "approve" or "reject" to proceed.`,
+          { parse_mode: 'Markdown' },
+        )
+      } else {
+        await ctx.reply(response.response, { parse_mode: 'Markdown' })
+      }
     } catch (err) {
-      console.error('[telegram] document handleIntake error:', err)
+      console.error('[telegram] document handler error:', err)
       await ctx.reply('Sorry, I could not process that document. Please try again.')
     }
   })

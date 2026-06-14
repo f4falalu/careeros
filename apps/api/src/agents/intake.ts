@@ -50,6 +50,14 @@ export async function runIntakeAgent(
 ): Promise<Record<string, unknown>> {
   await markRunning(input.taskId)
 
+  if (memoryService) {
+    try {
+      await memoryService.assembleContext(input.userId)
+    } catch (err) {
+      console.error('[intake] assembleContext error (non-blocking):', String(err))
+    }
+  }
+
   let jobText = ''
   const toolsUsed: string[] = []
 

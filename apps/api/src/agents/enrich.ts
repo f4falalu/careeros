@@ -36,6 +36,14 @@ export async function runEnrichAgent(
 ): Promise<Record<string, unknown>> {
   await markRunning(input.taskId)
 
+  if (memoryService) {
+    try {
+      await memoryService.assembleContext(input.userId)
+    } catch (err) {
+      console.error('[enrich] assembleContext error (non-blocking):', String(err))
+    }
+  }
+
   const autonomy = await getAutonomy(input.userId)
   if (!autonomy.crmEnrichment.enabled) {
     await markFailed(
