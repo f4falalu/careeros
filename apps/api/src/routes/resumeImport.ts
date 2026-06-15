@@ -7,10 +7,10 @@ import type { ResumeParsed } from '../agents/resumeParser.js'
 
 const app = new Hono()
 
-const MAX_PDF_BYTES = 5 * 1024 * 1024 // 5 MB
+const MAX_FILE_BYTES = 5 * 1024 * 1024 // 5 MB
 
 // ── POST /profile/resume-import ───────────────────────────────
-// Accepts a PDF, extracts text, enqueues the resume_parse agent.
+// Accepts a PDF or DOCX, extracts text, enqueues the resume_parse agent.
 // Returns { taskId } immediately — client polls /tasks/:id.
 app.post('/', async (c) => {
   const userId = c.get('userId')
@@ -27,32 +27,48 @@ app.post('/', async (c) => {
     return c.json({ code: 'bad_request', message: 'Field "file" is required' }, 400)
   }
 
-  const isPdf =
-    file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf'
-  if (!isPdf) {
-    return c.json({ code: 'bad_request', message: 'Only PDF files are accepted' }, 400)
+  const nameLower = file.name.toLowerCase()
+  const isPdf = nameLower.endsWith('.pdf') || file.type === 'application/pdf'
+  const isDocx =
+    nameLower.endsWith('.docx') ||
+    file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+
+  if (!isPdf && !isDocx) {
+    return c.json({ code: 'bad_request', message: 'Only PDF and DOCX files are accepted' }, 400)
   }
 
-  if (file.size > MAX_PDF_BYTES) {
+  if (file.size > MAX_FILE_BYTES) {
     return c.json({ code: 'bad_request', message: 'File must be under 5 MB' }, 400)
   }
 
-  // Extract plain text from the PDF
-  const { extractText } = await import('unpdf')
   const arrayBuffer = await file.arrayBuffer()
-  let pdfText: string
-  try {
-    const result = await extractText(new Uint8Array(arrayBuffer), { mergePages: true })
-    // unpdf returns { text: string } when mergePages:true, string[] otherwise
-    pdfText = Array.isArray(result.text)
-      ? result.text.join('\n\n')
-      : String(result.text)
-  } catch {
-    return c.json({ code: 'parse_error', message: 'Could not read PDF — is it a text-based PDF?' }, 422)
+  let resumeText: string
+
+  if (isPdf) {
+    const { extractText } = await import('unpdf')
+    try {
+      const result = await extractText(new Uint8Array(arrayBuffer), { mergePages: true })
+      resumeText = Array.isArray(result.text)
+        ? result.text.join('\n\n')
+        : String(result.text)
+    } catch {
+      return c.json({ code: 'parse_error', message: 'Could not read PDF — is it a text-based PDF?' }, 422)
+    }
+  } else {
+    // DOCX
+    const mammoth = await import('mammoth')
+    try {
+      const result = await mammoth.extractRawText({ buffer: Buffer.from(arrayBuffer) })
+      resumeText = result.value
+    } catch {
+      return c.json({ code: 'parse_error', message: 'Could not read DOCX file' }, 422)
+    }
   }
 
+  const pdfText = resumeText // keep variable name for downstream compatibility
+
   if (pdfText.trim().length < 50) {
-    return c.json({ code: 'parse_error', message: 'PDF appears to be empty or image-only' }, 422)
+    return c.json({ code: 'parse_error', message: 'File appears to be empty or image-only' }, 422)
   }
 
   const [task] = await db

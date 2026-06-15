@@ -88,8 +88,9 @@ export function ResumeImportBanner() {
   })
 
   const handleFile = useCallback((file: File) => {
-    if (!file.name.toLowerCase().endsWith('.pdf')) {
-      alert('Only PDF files are accepted')
+    const nameLower = file.name.toLowerCase()
+    if (!nameLower.endsWith('.pdf') && !nameLower.endsWith('.docx')) {
+      alert('Only PDF and DOCX files are accepted')
       return
     }
     if (file.size > 5 * 1024 * 1024) {
@@ -291,19 +292,19 @@ export function ResumeImportBanner() {
       <div className="flex items-center gap-2.5 min-w-0">
         <Upload size={14} strokeWidth={1.5} className="text-[var(--color-faint)] shrink-0" />
         <span className="text-[13px] text-[var(--color-muted)] truncate">
-          {dragOver ? 'Drop your PDF here' : 'Import from resume — AI will pre-fill your profile'}
+          {dragOver ? 'Drop your resume here' : 'Import from resume — AI will pre-fill your profile'}
         </span>
       </div>
       <button
         onClick={() => fileRef.current?.click()}
         className="shrink-0 ml-4 h-7 px-3 rounded-sm text-[12px] font-medium border border-[var(--color-border)] text-[var(--color-muted)] hover:text-[var(--color-text)] hover:border-[var(--color-text)] transition-colors"
       >
-        Upload PDF
+        Upload resume
       </button>
       <input
         ref={fileRef}
         type="file"
-        accept=".pdf,application/pdf"
+        accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         className="hidden"
         onChange={onInputChange}
       />
