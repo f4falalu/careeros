@@ -154,8 +154,7 @@ export function OpportunityCard({ opportunity, application }: Props) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tasks'] }),
   })
 
-  const interviewStages: typeof application['stage'][] = ['interview', 'final', 'offer']
-  const showInterviewBtn = application && interviewStages.includes(application.stage)
+  const showInterviewBtn = application && ['interview', 'final', 'offer'].includes(application.stage)
 
   return (
     <>

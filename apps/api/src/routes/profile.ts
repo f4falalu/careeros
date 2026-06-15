@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { eq, and, asc } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import type { InferInsertModel } from 'drizzle-orm'
+import { complete } from '../router/modelRouter.js'
 
 const app = new Hono()
 
@@ -470,6 +471,83 @@ app.delete('/projects/:id', async (c) => {
 
   await db.delete(schema.profileProjects).where(eq(schema.profileProjects.id, id))
   return c.json({ deleted: id })
+})
+
+// ── POST /profile/enhance ─────────────────────────────────────
+const EnhanceInputSchema = z.object({
+  field_type: z.enum(['headline', 'bio', 'bullets', 'description', 'achievement']),
+  content: z.string().min(1).max(5000),
+  context: z.object({
+    title: z.string().optional(),
+    company: z.string().optional(),
+  }).optional(),
+})
+
+const ENHANCE_PROMPTS: Record<string, (content: string, ctx?: { title?: string; company?: string }) => string> = {
+  headline: (content) =>
+    `You are a professional resume coach. Enhance this professional headline to be punchy, clear, and memorable. Use "·" as separators for multiple roles or specializations. Keep it under 150 characters. Preserve all factual claims exactly — do not invent new skills or titles.
+
+Return ONLY the enhanced headline text, nothing else.
+
+Original: ${content}`,
+
+  bio: (content) =>
+    `You are a professional resume coach. Rewrite this professional bio to be compelling, concise, and impactful. Structure it as 2–3 sentences: who you are, what makes you unique, and your impact. Use active voice and strong language. Preserve all facts exactly.
+
+Return ONLY the enhanced bio text, nothing else.
+
+Original: ${content}`,
+
+  bullets: (content, ctx) =>
+    `You are a professional resume coach${ctx?.title ? ` specializing in ${ctx.title} roles${ctx?.company ? ` at companies like ${ctx.company}` : ''}` : ''}. Enhance these responsibility and achievement bullets to be strong, specific, and impact-focused. Rules:
+- Preserve one bullet per line
+- Start each bullet with a powerful action verb (Led, Built, Drove, Launched, Reduced, etc.)
+- Quantify impact only where numbers are already present or clearly implied — never fabricate metrics
+- Keep all factual information intact
+- Make each bullet specific and results-oriented
+
+Return ONLY the enhanced bullets, one per line, nothing else.
+
+Original bullets:
+${content}`,
+
+  description: (content) =>
+    `You are a professional resume coach. Enhance this project description to clearly communicate the problem solved, the technical or strategic approach, and the measurable impact. Be concise and specific. Preserve all facts exactly.
+
+Return ONLY the enhanced description text, nothing else.
+
+Original: ${content}`,
+
+  achievement: (content) =>
+    `You are a professional resume coach. Enhance this achievements or activities text to highlight demonstrated skills, leadership, and impact. Use active, specific language. Preserve all facts exactly.
+
+Return ONLY the enhanced text, nothing else.
+
+Original: ${content}`,
+}
+
+app.post('/enhance', async (c) => {
+  const userId = c.get('userId')
+  let body: z.infer<typeof EnhanceInputSchema>
+  try {
+    body = EnhanceInputSchema.parse(await c.req.json())
+  } catch (err) {
+    return c.json({ code: 'validation_error', message: String(err) }, 400)
+  }
+
+  const prompt = ENHANCE_PROMPTS[body.field_type](body.content, body.context)
+
+  try {
+    const result = await complete(prompt, {
+      taskType: 'profile_enhance',
+      containsPersonalData: true,
+      allowCloud: true,
+      userId,
+    })
+    return c.json({ enhanced: result.text.trim() })
+  } catch (err) {
+    return c.json({ code: 'enhance_failed', message: String(err) }, 500)
+  }
 })
 
 export { app as profileRoutes }

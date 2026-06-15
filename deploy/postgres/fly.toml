@@ -1,0 +1,22 @@
+app = 'careeros-db'
+primary_region = 'iad'
+
+[build]
+
+[env]
+  POSTGRES_USER = 'careeros'
+  POSTGRES_DB = 'careeros'
+  PGDATA = '/data/pgdata'
+
+# POSTGRES_PASSWORD is set via: fly secrets set POSTGRES_PASSWORD=<password> --app careeros-db
+
+[[mounts]]
+  source = 'careeros_db_data'
+  destination = '/data'
+
+# No [[services]] needed — postgres is reached via private networking only
+# (careeros-db.internal:5432 from other apps in the same Fly org)
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '256mb'

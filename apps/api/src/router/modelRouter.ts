@@ -42,7 +42,8 @@ export const SYSTEM_RECOMMENDED: Record<string, { provider: string; model: strin
   intake:     { provider: 'openrouter', model: 'meta-llama/llama-3.3-70b-instruct' },
   enrich:     { provider: 'openrouter', model: 'meta-llama/llama-3.1-8b-instruct:free' },
   tracker:    { provider: 'openrouter', model: 'meta-llama/llama-3.1-8b-instruct:free' },
-  scrape:     { provider: 'openrouter', model: 'meta-llama/llama-3.1-8b-instruct:free' },
+  scrape:          { provider: 'openrouter', model: 'meta-llama/llama-3.1-8b-instruct:free' },
+  profile_enhance: { provider: 'openrouter', model: 'meta-llama/llama-3.3-70b-instruct' },
 }
 
 // ─────────────────────────────────────────────────────────────

@@ -1,0 +1,19 @@
+app = 'careeros-redis'
+primary_region = 'iad'
+
+[build]
+  image = 'redis:7-alpine'
+
+[env]
+  REDIS_ARGS = '--save 60 1 --loglevel warning'
+
+[[mounts]]
+  source = 'careeros_redis_data'
+  destination = '/data'
+
+# Accessible internally as careeros-redis.internal:6379
+# No external exposure needed.
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '256mb'

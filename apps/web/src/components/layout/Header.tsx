@@ -1,23 +1,38 @@
 'use client'
 import { usePathname } from 'next/navigation'
 import { useState } from 'react'
-import { Search, Plus } from 'lucide-react'
+import { Search, Plus, Bell } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 
-const titles: Record<string, string> = {
-  '/': 'Dashboard',
-  '/opportunities': 'Jobs',
+function getGreeting(): string {
+  const h = new Date().getHours()
+  if (h < 12) return 'Good morning'
+  if (h < 17) return 'Good afternoon'
+  return 'Good evening'
+}
+
+const PAGE_TITLES: Record<string, string> = {
+  '/jobs': 'Opportunities',
+  '/opportunities': 'Applications',
   '/resume': 'Resume Studio',
+  '/vvp': 'VVP Workspace',
+  '/outreach': 'Outreach Hub',
+  '/interviews': 'Interview Prep',
+  '/analytics': 'Career Graph',
+  '/profile': 'Skills & Profile',
   '/companies': 'Companies',
   '/agents': 'AI Agents',
+  '/settings': 'Settings',
 }
 
 export function Header() {
   const pathname = usePathname()
-  const title = titles[pathname] ?? 'CareerOS'
+  const isDashboard = pathname === '/'
+  const title = Object.entries(PAGE_TITLES).find(([p]) => pathname.startsWith(p))?.[1] ?? 'CareerOS'
+
   const [url, setUrl] = useState('')
-  const [open, setOpen] = useState(false)
+  const [addOpen, setAddOpen] = useState(false)
   const qc = useQueryClient()
 
   const intake = useMutation({
@@ -25,19 +40,32 @@ export function Header() {
       api.intake.submit({ url: jobUrl, source_channel: 'web' }),
     onSuccess: () => {
       setUrl('')
-      setOpen(false)
+      setAddOpen(false)
       qc.invalidateQueries({ queryKey: ['opportunities'] })
       qc.invalidateQueries({ queryKey: ['tasks'] })
     },
   })
 
   return (
-    <header className="flex items-center justify-between px-8 py-4 border-b border-[var(--color-border)] bg-[var(--color-surface)] sticky top-0 z-10">
-      <h1 className="text-[17px] font-semibold text-[var(--color-text)]">{title}</h1>
+    <header className="flex items-center justify-between px-7 border-b border-[var(--color-border)] bg-[var(--color-surface)] sticky top-0 z-10 min-h-[68px]">
+      {/* Left: greeting or page title */}
+      {isDashboard ? (
+        <div>
+          <h1 className="text-[20px] font-semibold text-[var(--color-text)] leading-tight">
+            {getGreeting()}, Falalu
+          </h1>
+          <p className="text-[12.5px] text-[var(--color-muted)] mt-0.5">
+            Here&apos;s your career overview and what matters today.
+          </p>
+        </div>
+      ) : (
+        <h1 className="text-[17px] font-semibold text-[var(--color-text)]">{title}</h1>
+      )}
 
-      <div className="flex items-center gap-3">
+      {/* Right: actions */}
+      <div className="flex items-center gap-2">
         {/* Quick intake */}
-        {open ? (
+        {addOpen ? (
           <form
             onSubmit={(e) => {
               e.preventDefault()
@@ -51,37 +79,46 @@ export function Header() {
               placeholder="Paste job URL…"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
-              className="h-9 w-72 px-3 rounded-sm border border-[var(--color-border)] bg-[var(--color-surface)] text-[14px] text-[var(--color-text)] placeholder:text-[var(--color-faint)] focus:outline-none focus:border-[var(--color-muted)]"
+              className="h-8 w-64 px-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[13px] text-[var(--color-text)] placeholder:text-[var(--color-faint)] focus:outline-none focus:border-[var(--color-border-strong)] transition-colors"
             />
             <button
               type="submit"
               disabled={intake.isPending || !url}
-              className="h-9 px-4 rounded-sm bg-[var(--color-text)] text-[var(--color-bg)] text-[13px] font-medium disabled:opacity-50 hover:opacity-90 transition-opacity"
+              className="h-8 px-3 rounded-md bg-[var(--color-text)] text-[var(--color-surface)] text-[12.5px] font-medium disabled:opacity-50 hover:opacity-90 transition-opacity"
             >
-              {intake.isPending ? 'Adding…' : 'Add Job'}
+              {intake.isPending ? 'Adding…' : 'Add'}
             </button>
             <button
               type="button"
-              onClick={() => setOpen(false)}
-              className="h-9 px-3 rounded-sm text-[var(--color-muted)] hover:text-[var(--color-text)] text-[13px]"
+              onClick={() => setAddOpen(false)}
+              className="h-8 px-2.5 rounded-md text-[var(--color-muted)] hover:text-[var(--color-text)] text-[12.5px] transition-colors"
             >
               Cancel
             </button>
           </form>
         ) : (
           <button
-            onClick={() => setOpen(true)}
-            className="flex items-center gap-1.5 h-9 px-4 rounded-sm bg-[var(--color-text)] text-[var(--color-bg)] text-[13px] font-medium hover:opacity-90 transition-opacity"
+            onClick={() => setAddOpen(true)}
+            className="flex items-center gap-1.5 h-8 px-3 rounded-md bg-[var(--color-text)] text-[var(--color-surface)] text-[12.5px] font-medium hover:opacity-90 transition-opacity"
           >
-            <Plus size={14} />
+            <Plus size={13} />
             Add Job
           </button>
         )}
 
-        <button className="flex items-center gap-2 h-9 px-3 rounded-sm border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-muted)] text-[13px] hover:text-[var(--color-text)] transition-colors">
-          <Search size={14} strokeWidth={1.5} />
-          <span className="hidden sm:inline">Search</span>
-          <kbd className="hidden sm:inline text-[11px] opacity-60">⌘K</kbd>
+        {/* Search */}
+        <button className="flex items-center gap-2 h-8 px-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-muted)] text-[12.5px] hover:text-[var(--color-text)] hover:border-[var(--color-border-strong)] transition-colors min-w-[160px]">
+          <Search size={13} strokeWidth={1.5} />
+          <span className="flex-1 text-left text-[var(--color-faint)]">Search anything…</span>
+          <kbd className="text-[10px] opacity-50 font-medium">⌘K</kbd>
+        </button>
+
+        {/* Notifications */}
+        <button className="relative h-8 w-8 flex items-center justify-center rounded-md border border-[var(--color-border)] text-[var(--color-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-bg)] transition-colors">
+          <Bell size={14} strokeWidth={1.5} />
+          <span className="absolute -top-1 -right-1 w-4 h-4 bg-[var(--color-amber)] text-white text-[9px] font-bold rounded-full flex items-center justify-center">
+            3
+          </span>
         </button>
       </div>
     </header>

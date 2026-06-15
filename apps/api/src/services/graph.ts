@@ -7,6 +7,41 @@ import { complete } from '../router/modelRouter.js'
 // Shared types
 // ─────────────────────────────────────────────────────────────
 
+export interface SubgraphNode {
+  id: string
+  type: string
+  entityId: string | null
+  label: string
+  metadata: Record<string, unknown>
+}
+
+export interface SubgraphEdge {
+  id: string
+  source: string
+  target: string
+  relationship: string
+  confidence: number
+  evidence: unknown[]
+}
+
+export interface SubgraphResult {
+  nodes: SubgraphNode[]
+  edges: SubgraphEdge[]
+  total: number
+}
+
+export interface NodeDetailResult {
+  node: SubgraphNode
+  edges: SubgraphEdge[]
+  inferences: Array<{
+    id: string
+    type: string
+    label: string
+    confidence: number
+    evidence: unknown
+  }>
+}
+
 export interface EvidenceResult {
   sourceNodeId: string
   sourceNodeLabel: string
@@ -689,6 +724,217 @@ Return ONLY a JSON array of short theme labels (max 5 words each). Example: ["Pr
         })
       }
     }
+  }
+
+  // ── getSubgraph ───────────────────────────────────────────────
+
+  async getSubgraph(userId: string, rootNodeId: string | null, depth: number): Promise<SubgraphResult> {
+    const NODE_CAP = 50
+
+    // Resolve root node
+    let rootId = rootNodeId
+    if (!rootId) {
+      const [userNode] = await this.db
+        .select({ id: schema.graphNodes.id })
+        .from(schema.graphNodes)
+        .where(and(eq(schema.graphNodes.userId, userId), eq(schema.graphNodes.type, 'user')))
+        .limit(1)
+      if (!userNode) return { nodes: [], edges: [], total: 0 }
+      rootId = userNode.id
+    }
+
+    const visitedNodeIds = new Set<string>()
+    const collectedEdges: SubgraphEdge[] = []
+    const collectedNodes: SubgraphNode[] = []
+    const frontier = [rootId]
+
+    // Fetch root node
+    const [rootRow] = await this.db
+      .select()
+      .from(schema.graphNodes)
+      .where(and(eq(schema.graphNodes.userId, userId), eq(schema.graphNodes.id, rootId)))
+      .limit(1)
+
+    if (!rootRow) return { nodes: [], edges: [], total: 0 }
+
+    visitedNodeIds.add(rootId)
+    collectedNodes.push({
+      id: rootRow.id,
+      type: rootRow.type,
+      entityId: rootRow.entityId ?? null,
+      label: rootRow.label,
+      metadata: (rootRow.attributes ?? {}) as Record<string, unknown>,
+    })
+
+    for (let d = 0; d < depth && frontier.length > 0; d++) {
+      const currentFrontier = [...frontier]
+      frontier.length = 0
+
+      // Fetch all edges touching any frontier node
+      const edges = await this.db
+        .select()
+        .from(schema.graphEdges)
+        .where(
+          and(
+            eq(schema.graphEdges.userId, userId),
+            or(
+              inArray(schema.graphEdges.fromNodeId, currentFrontier),
+              inArray(schema.graphEdges.toNodeId, currentFrontier),
+            ),
+          ),
+        )
+
+      const newNodeIds: string[] = []
+      for (const e of edges) {
+        // Add edge if not already collected
+        if (!collectedEdges.find((ce) => ce.id === e.id)) {
+          collectedEdges.push({
+            id: e.id,
+            source: e.fromNodeId,
+            target: e.toNodeId,
+            relationship: e.relationship,
+            confidence: Number(e.confidence),
+            evidence: (e.evidence as unknown[]) ?? [],
+          })
+        }
+
+        // Collect unvisited neighbors
+        for (const neighborId of [e.fromNodeId, e.toNodeId]) {
+          if (!visitedNodeIds.has(neighborId) && collectedNodes.length < NODE_CAP) {
+            visitedNodeIds.add(neighborId)
+            newNodeIds.push(neighborId)
+            frontier.push(neighborId)
+          }
+        }
+      }
+
+      if (newNodeIds.length > 0) {
+        const newNodes = await this.db
+          .select()
+          .from(schema.graphNodes)
+          .where(and(eq(schema.graphNodes.userId, userId), inArray(schema.graphNodes.id, newNodeIds)))
+        for (const n of newNodes) {
+          collectedNodes.push({
+            id: n.id,
+            type: n.type,
+            entityId: n.entityId ?? null,
+            label: n.label,
+            metadata: (n.attributes ?? {}) as Record<string, unknown>,
+          })
+        }
+      }
+
+      if (collectedNodes.length >= NODE_CAP) break
+    }
+
+    return {
+      nodes: collectedNodes,
+      edges: collectedEdges,
+      total: collectedNodes.length,
+    }
+  }
+
+  // ── getNodeDetail ─────────────────────────────────────────────
+
+  async getNodeDetail(userId: string, nodeId: string): Promise<NodeDetailResult | null> {
+    const [nodeRow] = await this.db
+      .select()
+      .from(schema.graphNodes)
+      .where(and(eq(schema.graphNodes.userId, userId), eq(schema.graphNodes.id, nodeId)))
+      .limit(1)
+
+    if (!nodeRow) return null
+
+    const edges = await this.db
+      .select()
+      .from(schema.graphEdges)
+      .where(
+        and(
+          eq(schema.graphEdges.userId, userId),
+          or(eq(schema.graphEdges.fromNodeId, nodeId), eq(schema.graphEdges.toNodeId, nodeId)),
+        ),
+      )
+
+    const subgraphEdges: SubgraphEdge[] = edges.map((e) => ({
+      id: e.id,
+      source: e.fromNodeId,
+      target: e.toNodeId,
+      relationship: e.relationship,
+      confidence: Number(e.confidence),
+      evidence: (e.evidence as unknown[]) ?? [],
+    }))
+
+    const inferences = await this.db
+      .select()
+      .from(schema.graphInferences)
+      .where(
+        and(
+          eq(schema.graphInferences.userId, userId),
+          or(isNull(schema.graphInferences.expiresAt), gt(schema.graphInferences.expiresAt, new Date())),
+        ),
+      )
+      .limit(20)
+
+    return {
+      node: {
+        id: nodeRow.id,
+        type: nodeRow.type,
+        entityId: nodeRow.entityId ?? null,
+        label: nodeRow.label,
+        metadata: (nodeRow.attributes ?? {}) as Record<string, unknown>,
+      },
+      edges: subgraphEdges,
+      inferences: inferences.map((i) => ({
+        id: i.id,
+        type: i.type,
+        label: i.label,
+        confidence: Number(i.confidence),
+        evidence: i.evidence,
+      })),
+    }
+  }
+
+  // ── findPath ──────────────────────────────────────────────────
+
+  async findPath(userId: string, fromId: string, toId: string): Promise<string[]> {
+    if (fromId === toId) return [fromId]
+
+    // Load all edges for this user (cap at 1000 for performance)
+    const edges = await this.db
+      .select({
+        fromNodeId: schema.graphEdges.fromNodeId,
+        toNodeId: schema.graphEdges.toNodeId,
+      })
+      .from(schema.graphEdges)
+      .where(eq(schema.graphEdges.userId, userId))
+      .limit(1000)
+
+    // Build bidirectional adjacency list
+    const adj = new Map<string, string[]>()
+    for (const e of edges) {
+      if (!adj.has(e.fromNodeId)) adj.set(e.fromNodeId, [])
+      if (!adj.has(e.toNodeId)) adj.set(e.toNodeId, [])
+      adj.get(e.fromNodeId)!.push(e.toNodeId)
+      adj.get(e.toNodeId)!.push(e.fromNodeId)
+    }
+
+    // BFS
+    const visited = new Set<string>([fromId])
+    const queue: Array<{ id: string; path: string[] }> = [{ id: fromId, path: [fromId] }]
+
+    while (queue.length > 0) {
+      const { id, path } = queue.shift()!
+      const neighbors = adj.get(id) ?? []
+      for (const neighbor of neighbors) {
+        if (neighbor === toId) return [...path, toId]
+        if (!visited.has(neighbor) && path.length < 10) {
+          visited.add(neighbor)
+          queue.push({ id: neighbor, path: [...path, neighbor] })
+        }
+      }
+    }
+
+    return []
   }
 
   // ── private helpers ───────────────────────────────────────────

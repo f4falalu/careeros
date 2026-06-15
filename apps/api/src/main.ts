@@ -38,9 +38,13 @@ import { initQdrant } from './lib/qdrant.js'
 
 const app = new Hono()
 
-// ── CORS — allow the local Next.js dev server ─────────────────
+// ── CORS — dev defaults; override via CORS_ORIGINS (comma-separated) in prod ──
+const corsOrigins = process.env.CORS_ORIGINS
+  ? process.env.CORS_ORIGINS.split(',')
+  : ['http://localhost:3000', 'http://127.0.0.1:3000']
+
 app.use('*', cors({
-  origin: ['http://localhost:3000', 'http://127.0.0.1:3000'],
+  origin: corsOrigins,
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization'],
   credentials: true,

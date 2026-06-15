@@ -1,0 +1,39 @@
+use_default_settings: true
+
+server:
+  secret_key: "careeros-searxng-f79ae2f0f456701e2fabb4cff2fae672"
+  limiter: false
+  image_proxy: false
+  port: 8080
+  bind_address: "0.0.0.0"
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+  max_page: 3
+  formats:
+    - html
+    - json
+
+ui:
+  static_use_hash: true
+  default_theme: simple
+
+# Restrict to engines suited for job/company research
+engines:
+  - name: google
+    engine: google
+    use_mobile_ui: false
+  - name: bing
+    engine: bing
+  - name: duckduckgo
+    engine: duckduckgo
+  - name: wikipedia
+    engine: wikipedia
+    language: en
+
+enabled_plugins:
+  - Hash plugin
+  - Self Informations
+  - Tracker URL remover

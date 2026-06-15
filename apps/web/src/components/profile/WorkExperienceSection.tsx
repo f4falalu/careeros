@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, Pencil, Trash2, Briefcase, Check, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { WorkExperience } from '@/types'
+import { AIEnhanceField } from './AIEnhanceField'
 
 const EMPTY_FORM = {
   company_name: '',
@@ -127,12 +128,15 @@ function WorkExpModal({
           </div>
 
           <Field label="Responsibilities & Achievements" hint="One bullet per line. Lead with a strong action verb.">
-            <textarea
+            <AIEnhanceField
+              as="textarea"
               rows={5}
-              className="field-input resize-none"
-              placeholder="Led AI transformation across 3 business units, reducing manual work by 40%&#10;Managed cross-functional team of 8 engineers and designers"
+              fieldType="bullets"
+              context={{ title: form.title, company: form.company_name }}
               value={form.bullets}
-              onChange={(e) => set('bullets', e.target.value)}
+              onChange={(v) => set('bullets', v)}
+              placeholder={`Led AI transformation across 3 business units, reducing manual work by 40%\nManaged cross-functional team of 8 engineers and designers`}
+              className="field-input resize-none"
             />
           </Field>
 

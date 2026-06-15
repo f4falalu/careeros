@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Pencil, MapPin, Shield, Globe, Check, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { Profile } from '@/types'
+import { AIEnhanceField } from './AIEnhanceField'
 
 const LINK_KEYS = ['linkedin', 'portfolio', 'github', 'twitter', 'notion'] as const
 
@@ -34,7 +35,7 @@ export function HeroSection({ profile }: Props) {
           ? form.languages.split(',').map((l) => l.trim()).filter(Boolean)
           : [],
         links: Object.fromEntries(
-          LINK_KEYS.filter((k) => form[k]).map((k) => [k, form[k]]),
+          LINK_KEYS.filter((k) => (form as Record<string, string>)[k]).map((k) => [k, (form as Record<string, string>)[k]]),
         ),
       }),
     onSuccess: () => {
@@ -74,23 +75,27 @@ export function HeroSection({ profile }: Props) {
             <label className="block text-[11px] font-medium text-[var(--color-muted)] mb-1">
               Headline
             </label>
-            <input
-              className="w-full px-3 py-2 rounded-sm border border-[var(--color-border)] bg-[var(--color-surface-sunken)] text-[13px] text-[var(--color-text)] placeholder:text-[var(--color-faint)] focus:outline-none focus:border-[var(--color-muted)]"
-              placeholder="e.g. AI Product Manager · GenAI Consultant"
+            <AIEnhanceField
+              as="input"
+              fieldType="headline"
               value={form.headline}
-              onChange={(e) => setForm((f) => ({ ...f, headline: e.target.value }))}
+              onChange={(v) => setForm((f) => ({ ...f, headline: v }))}
+              placeholder="e.g. AI Product Manager · GenAI Consultant"
+              className="w-full px-3 py-2 rounded-sm border border-[var(--color-border)] bg-[var(--color-surface-sunken)] text-[13px] text-[var(--color-text)] placeholder:text-[var(--color-faint)] focus:outline-none focus:border-[var(--color-muted)]"
             />
           </div>
           <div className="col-span-2">
             <label className="block text-[11px] font-medium text-[var(--color-muted)] mb-1">
               Bio
             </label>
-            <textarea
+            <AIEnhanceField
+              as="textarea"
               rows={4}
-              className="w-full px-3 py-2 rounded-sm border border-[var(--color-border)] bg-[var(--color-surface-sunken)] text-[13px] text-[var(--color-text)] placeholder:text-[var(--color-faint)] focus:outline-none focus:border-[var(--color-muted)] resize-none"
-              placeholder="2–3 sentences describing who you are and what you do"
+              fieldType="bio"
               value={form.bio}
-              onChange={(e) => setForm((f) => ({ ...f, bio: e.target.value }))}
+              onChange={(v) => setForm((f) => ({ ...f, bio: v }))}
+              placeholder="2–3 sentences describing who you are and what you do"
+              className="w-full px-3 py-2 rounded-sm border border-[var(--color-border)] bg-[var(--color-surface-sunken)] text-[13px] text-[var(--color-text)] placeholder:text-[var(--color-faint)] focus:outline-none focus:border-[var(--color-muted)] resize-none"
             />
           </div>
           <div>
@@ -139,7 +144,7 @@ export function HeroSection({ profile }: Props) {
                 <input
                   className="w-full px-3 py-1.5 rounded-sm border border-[var(--color-border)] bg-[var(--color-surface-sunken)] text-[12px] text-[var(--color-text)] placeholder:text-[var(--color-faint)] focus:outline-none focus:border-[var(--color-muted)]"
                   placeholder={`${key}.com/…`}
-                  value={form[key]}
+                  value={(form as Record<string, string>)[key]}
                   onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
                 />
               </div>

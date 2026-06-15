@@ -134,6 +134,11 @@ export const api = {
     get: () => req<Profile>('/profile'),
     update: (data: Partial<Profile>) =>
       req<Profile>('/profile', { method: 'PUT', body: JSON.stringify(data) }),
+    enhance: (data: {
+      field_type: 'headline' | 'bio' | 'bullets' | 'description' | 'achievement'
+      content: string
+      context?: { title?: string; company?: string }
+    }) => req<{ enhanced: string }>('/profile/enhance', { method: 'POST', body: JSON.stringify(data) }),
     skills: {
       list: () => req<Skill[]>('/profile/skills'),
       upsert: (data: { name: string; proficiency?: number; years?: number } | Array<{ name: string; proficiency?: number; years?: number }>) =>
@@ -284,6 +289,21 @@ export const api = {
       req<FollowUp>(`/followups/${followUpId}/approve`, { method: 'PATCH' }),
   },
 
+  graph: {
+    subgraph: (params?: { root?: string; depth?: number }) =>
+      req<{ nodes: KGNode[]; edges: KGEdge[]; total: number }>(`/graph/subgraph${qs(params)}`),
+    node: (id: string) =>
+      req<{ node: KGNode; edges: KGEdge[]; inferences: KGInference[] }>(`/graph/node/${id}`),
+    paths: (from: string, to: string) =>
+      req<{ path: string[] }>(`/graph/paths?from=${from}&to=${to}`),
+    inferences: () =>
+      req<Record<string, KGInference[]>>('/graph/inferences'),
+    infer: () =>
+      req<Record<string, KGInference[]>>('/graph/infer', { method: 'POST' }),
+    enrich: (data: unknown) =>
+      req<void>('/graph/enrich', { method: 'POST', body: JSON.stringify(data) }),
+  },
+
   strategist: {
     analyze: () => req<AgentTask>('/strategist/analyze', { method: 'POST' }),
     latest: () => req<StrategistTask | null>('/strategist/latest'),
@@ -361,4 +381,33 @@ export interface ModelOption {
   name: string
   context_length?: number
   pricing?: { prompt: string; completion: string }
+}
+
+// ─── Knowledge Graph types ────────────────────────────────────
+
+export interface KGNode {
+  id: string
+  type: string
+  entityId?: string | null
+  label: string
+  metadata: Record<string, unknown>
+}
+
+export interface KGEdge {
+  id: string
+  source: string
+  target: string
+  relationship: string
+  confidence: number
+  evidence: unknown[]
+}
+
+export interface KGInference {
+  id: string
+  type: string
+  label: string
+  confidence: number
+  evidence: unknown
+  computedAt?: string
+  expiresAt?: string | null
 }

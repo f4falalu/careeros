@@ -54,4 +54,33 @@ app.post('/graph/infer', async (c) => {
   return c.json(grouped)
 })
 
+// GET /graph/subgraph?root=<nodeId>&depth=<1-3>
+app.get('/graph/subgraph', async (c) => {
+  const userId = c.get('userId')
+  const root = c.req.query('root') ?? null
+  const rawDepth = parseInt(c.req.query('depth') ?? '1', 10)
+  const depth = Math.min(Math.max(rawDepth, 1), 3)
+  const result = await graphService.getSubgraph(userId, root, depth)
+  return c.json(result)
+})
+
+// GET /graph/node/:id
+app.get('/graph/node/:id', async (c) => {
+  const userId = c.get('userId')
+  const nodeId = c.req.param('id')
+  const detail = await graphService.getNodeDetail(userId, nodeId)
+  if (!detail) return c.json({ error: 'Node not found' }, 404)
+  return c.json(detail)
+})
+
+// GET /graph/paths?from=<nodeId>&to=<nodeId>
+app.get('/graph/paths', async (c) => {
+  const userId = c.get('userId')
+  const from = c.req.query('from') ?? ''
+  const to = c.req.query('to') ?? ''
+  if (!from || !to) return c.json({ error: 'from and to query params are required' }, 400)
+  const path = await graphService.findPath(userId, from, to)
+  return c.json({ path })
+})
+
 export { app as graphRoutes }

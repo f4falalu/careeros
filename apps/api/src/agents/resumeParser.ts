@@ -5,7 +5,7 @@
 
 import { z, type ZodType } from 'zod'
 import { generateStructured } from '../router/modelRouter.js'
-import { markRunning, markSucceeded, markFailed } from './lib/task.js'
+import { markRunning, markSucceeded } from './lib/task.js'
 
 // ─────────────────────────────────────────────────────────────
 // Output schema
@@ -48,7 +48,9 @@ const ResumeParseSchema = z.object({
   location: z.string().nullable().optional(),
   work_auth: z.string().nullable().optional(),
   languages: z.array(z.string()).default([]),
-  links: z.record(z.string()).default({}),
+  links: z.record(z.string().nullable()).default({}).transform(
+    (r) => Object.fromEntries(Object.entries(r).filter(([, v]) => v !== null)) as Record<string, string>,
+  ),
   work_experiences: z.array(WorkExpSchema).default([]),
   education: z.array(EducationSchema).default([]),
   skills: z.array(z.object({
@@ -72,8 +74,7 @@ export async function runResumeParserAgent(input: {
   await markRunning(input.taskId)
 
   if (input.pdfText.trim().length < 50) {
-    await markFailed(input.taskId, 'Resume text too short to parse')
-    return { error: 'Resume text too short to parse' }
+    throw new Error('Resume text too short to parse')
   }
 
   const prompt = `You extract structured candidate profile data from a resume. Never invent facts — only extract what is actually present. If a field is absent, return null or an empty array.
@@ -109,8 +110,7 @@ Extract the complete structured profile.`
     modelName = result.modelName
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    await markFailed(input.taskId, `LLM parse failed: ${msg}`)
-    return { error: `LLM parse failed: ${msg}` }
+    throw new Error(`LLM parse failed: ${msg}`)
   }
 
   await markSucceeded(input.taskId, {

@@ -32,15 +32,21 @@ import type { OpportunityDetail, CompanyBrief, Vvp, OutreachMessage, InterviewBr
 
 // ── Helpers ───────────────────────────────────────────────────
 
-function MatchBadge({ score }: { score: number }) {
+function MatchBadge({ score, opportunityId }: { score: number; opportunityId?: string }) {
   const color =
     score >= 90 ? 'text-emerald-600 bg-emerald-50 border-emerald-200' :
     score >= 75 ? 'text-amber-600 bg-amber-50 border-amber-200' :
                   'text-[var(--color-muted)] bg-[var(--color-surface-sunken)] border-[var(--color-border)]'
-  return (
-    <span className={cn('inline-flex items-center gap-1 px-2.5 py-1 rounded-pill border text-[12px] font-bold tabular', color)}>
+  const badge = (
+    <span className={cn('inline-flex items-center gap-1 px-2.5 py-1 rounded-pill border text-[12px] font-bold tabular transition-opacity hover:opacity-80', color)}>
       {score}% Match
     </span>
+  )
+  if (!opportunityId) return badge
+  return (
+    <Link href={`/career-intelligence?pathTo=${opportunityId}`} title="See why you match in Career Intelligence">
+      {badge}
+    </Link>
   )
 }
 
@@ -753,7 +759,11 @@ export default function OpportunityDetailPage({ params }: { params: Promise<{ id
     mutationFn: () => api.vvp.propose(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['tasks'] })
-      setTimeout(() => qc.invalidateQueries({ queryKey: ['vvps', id] }), 5000)
+      setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ['vvps', id] })
+        // Refresh graph if Career Intelligence is open in another tab
+        qc.invalidateQueries({ queryKey: ['kg-subgraph-root'] })
+      }, 5000)
     },
   })
 
@@ -842,7 +852,7 @@ export default function OpportunityDetailPage({ params }: { params: Promise<{ id
               <h1 className="text-[20px] font-semibold text-[var(--color-text)]">
                 {detail.role_title}
               </h1>
-              {detail.match && <MatchBadge score={Number(detail.match.score)} />}
+              {detail.match && <MatchBadge score={Number(detail.match.score)} opportunityId={detail.id} />}
             </div>
             {detail.company && (
               <p className="text-[14px] text-[var(--color-muted)] mb-3">

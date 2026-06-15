@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import './globals.css'
 import { Providers } from '@/providers'
 import { Shell } from '@/components/layout/Shell'
-import { CareerOSCopilot } from '@/components/copilot/CareerOSCopilot'
+import { FloatingCopilot } from '@/components/copilot/FloatingCopilot'
 
 export const metadata: Metadata = {
   title: 'CareerOS',
@@ -15,7 +15,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body suppressHydrationWarning>
         <Providers>
           <Shell>{children}</Shell>
-          <CareerOSCopilot />
+          <FloatingCopilot />
         </Providers>
       </body>
     </html>
