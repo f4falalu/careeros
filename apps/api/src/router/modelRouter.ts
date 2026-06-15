@@ -28,8 +28,9 @@ export const PROVIDER_BASE_URLS: Record<string, string> = {
 // System-recommended model per task type — used when a user has a provider key
 // configured but hasn't set a custom route for a specific task.
 export const SYSTEM_RECOMMENDED: Record<string, { provider: string; model: string }> = {
-  research:   { provider: 'openrouter', model: 'anthropic/claude-3.5-sonnet' },
-  resume:     { provider: 'openrouter', model: 'google/gemini-2.5-pro-preview' },
+  research:      { provider: 'openrouter', model: 'anthropic/claude-3.5-sonnet' },
+  resume:        { provider: 'openrouter', model: 'google/gemini-2.5-pro-preview' },
+  resume_parse:  { provider: 'groq',       model: 'llama-3.3-70b-versatile' },
   cover:      { provider: 'openrouter', model: 'anthropic/claude-3.5-sonnet' },
   vvp:        { provider: 'openrouter', model: 'anthropic/claude-3.5-sonnet' },
   interview:  { provider: 'openrouter', model: 'anthropic/claude-3.5-sonnet' },
@@ -126,6 +127,12 @@ export function decideRoute(
   containsPersonalData: boolean,
   allowCloud = false,
 ): RouteDecision {
+  // allowCloud=true is an explicit caller opt-in (e.g. user-triggered upload).
+  // A key being present is sufficient — no need for CLOUD_FALLBACK_ENABLED.
+  const hasCloudKey = Boolean(config.groqApiKey || config.openrouterApiKey)
+  if (allowCloud && hasCloudKey) {
+    return { modelKind: 'cloud', modelName: envCloudModel(), reason: `cloud for ${taskType}` }
+  }
   if (containsPersonalData && config.blockCloudPersonalData) {
     return { modelKind: 'local', modelName: DEFAULT_LOCAL_MODEL, reason: 'privacy: personal data forced local' }
   }
@@ -314,17 +321,17 @@ async function localStructured<T>(
     return { data: result.data, modelKind: route.modelKind, modelName: route.modelName, reason: route.reason }
   }
 
-  const hints = result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ')
-  const retryText = await ollamaGenerate(
-    `${systemHint}\nFix these issues and return ONLY corrected JSON:\n${hints}\n\nOriginal:\n${JSON.stringify(parsed)}\n\n${prompt}`,
-    route.modelName,
-  )
-
-  const retryParsed = tryParseJson(retryText)
-  if (retryParsed !== null) {
-    const retryResult = schema.safeParse(retryParsed)
-    if (retryResult.success) {
-      return { data: retryResult.data, modelKind: route.modelKind, modelName: route.modelName, reason: route.reason }
+  // For local models avoid a second full inference pass — try lenient parse instead.
+  // Strip fields that failed validation and re-parse so callers get partial data.
+  if (typeof parsed === 'object' && parsed !== null) {
+    const issues = result.error.issues
+    const cleaned: Record<string, unknown> = { ...(parsed as Record<string, unknown>) }
+    for (const issue of issues) {
+      if (issue.path.length === 1) delete cleaned[issue.path[0] as string]
+    }
+    const lenientResult = schema.safeParse(cleaned)
+    if (lenientResult.success) {
+      return { data: lenientResult.data, modelKind: route.modelKind, modelName: route.modelName, reason: route.reason }
     }
   }
 

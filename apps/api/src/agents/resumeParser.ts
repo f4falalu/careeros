@@ -89,7 +89,7 @@ Rules:
 - skills_extracted on each work experience: skills specifically mentioned or clearly implied by that role.
 
 Resume text:
-${input.pdfText.slice(0, 14_000)}
+${input.pdfText.slice(0, 8_000)}
 
 Extract the complete structured profile.`
 
@@ -101,7 +101,8 @@ Extract the complete structured profile.`
     const result = await generateStructured<ResumeParsed>(prompt, ResumeParseSchema as ZodType<ResumeParsed>, {
       taskType: 'resume_parse',
       containsPersonalData: true,
-      allowCloud: false,
+      allowCloud: true,
+      userId: input.userId,
     })
     parsed = result.data
     modelKind = result.modelKind
