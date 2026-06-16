@@ -7,7 +7,7 @@ const app = new Hono()
 
 // ── POST /strategist/analyze ──────────────────────────────────
 // Trigger a full pipeline analysis.
-app.post('/strategist/analyze', async (c) => {
+app.post('/analyze', async (c) => {
   const userId = c.get('userId')
 
   const [task] = await db
@@ -28,7 +28,7 @@ app.post('/strategist/analyze', async (c) => {
 
 // ── GET /strategist/latest ────────────────────────────────────
 // Return the most recent succeeded strategist task (or null).
-app.get('/strategist/latest', async (c) => {
+app.get('/latest', async (c) => {
   const userId = c.get('userId')
 
   const [task] = await db
