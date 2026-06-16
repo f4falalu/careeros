@@ -1,5 +1,6 @@
 'use client'
 import { memo, useState } from 'react'
+import { motion } from 'framer-motion'
 import { BaseEdge, EdgeLabelRenderer, getStraightPath } from 'reactflow'
 import type { EdgeProps } from 'reactflow'
 import type { KGEdgeData } from './types'
@@ -18,6 +19,7 @@ function KGEdgeComponent({
 
   const conf = data?.confidence ?? 1
   const isPathHighlighted = data?.isPathHighlighted ?? false
+  const isNew = data?.isNew ?? false
 
   const edgeStyle = {
     ...style,
@@ -39,7 +41,23 @@ function KGEdgeComponent({
         onMouseLeave={() => setHovered(false)}
         style={{ cursor: 'default' }}
       />
-      <BaseEdge id={id} path={edgePath} style={edgeStyle} />
+
+      {/* Fix 5 (Req 25): stroke-dashoffset draw animation for new edges */}
+      {isNew ? (
+        <motion.path
+          id={id}
+          d={edgePath}
+          fill="none"
+          strokeLinecap="round"
+          className="react-flow__edge-path"
+          initial={{ pathLength: 0 }}
+          animate={{ pathLength: 1 }}
+          transition={{ duration: 0.2, ease: 'easeOut' }}
+          style={edgeStyle}
+        />
+      ) : (
+        <BaseEdge id={id} path={edgePath} style={edgeStyle} />
+      )}
 
       {hovered && data?.relationship && (
         <EdgeLabelRenderer>

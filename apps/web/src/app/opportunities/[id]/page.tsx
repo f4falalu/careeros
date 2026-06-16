@@ -759,9 +759,13 @@ export default function OpportunityDetailPage({ params }: { params: Promise<{ id
     mutationFn: () => api.vvp.propose(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['tasks'] })
+      // Fix 8 (Req 34): enrich graph with the opportunity node so path-finding resolves it
+      void api.graph.enrich({
+        nodes: [{ type: 'opportunity', entityId: id, label: detail?.role_title ?? 'Opportunity' }],
+        edges: [],
+      })
       setTimeout(() => {
         qc.invalidateQueries({ queryKey: ['vvps', id] })
-        // Refresh graph if Career Intelligence is open in another tab
         qc.invalidateQueries({ queryKey: ['kg-subgraph-root'] })
       }, 5000)
     },

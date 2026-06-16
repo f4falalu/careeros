@@ -12,6 +12,9 @@ export interface KGNodeData {
   hasError: boolean
   isPathHighlighted: boolean
   isSearchMatch: boolean | null
+  isPulsing: boolean
+  isEntering: boolean
+  hasNoConnections: boolean
 }
 
 export interface KGEdgeData {
@@ -19,6 +22,7 @@ export interface KGEdgeData {
   confidence: number
   evidence: unknown[]
   isPathHighlighted: boolean
+  isNew: boolean
 }
 
 export type RFNode = Node<KGNodeData>

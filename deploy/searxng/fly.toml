@@ -3,7 +3,7 @@ primary_region = 'iad'
 
 [build]
 
-[[http_service]]
+[http_service]
   internal_port = 8080
   # Not exposed publicly — API reaches it via careeros-searxng.internal:8080
   force_https = false

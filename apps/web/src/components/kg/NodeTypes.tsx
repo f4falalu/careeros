@@ -1,5 +1,6 @@
 'use client'
-import { memo } from 'react'
+import { memo, useEffect } from 'react'
+import { motion, useAnimation } from 'framer-motion'
 import { Handle, Position } from 'reactflow'
 import type { NodeProps } from 'reactflow'
 import type { KGNodeData } from './types'
@@ -11,18 +12,32 @@ function KGNodeComponent({ data, selected }: NodeProps<KGNodeData>) {
   const w = NODE_WIDTHS[size]
   const h = NODE_HEIGHTS[size]
   const short = truncateLabel(data.label)
+  const controls = useAnimation()
 
-  const borderColor = selected ? style.color : data.hasError ? '#ef4444' : 'transparent'
-  const ringColor = data.isPathHighlighted ? '#f59e0b' : selected ? style.color : undefined
+  // Fix 1 (Req 14): scale pulse when node is clicked for expansion
+  useEffect(() => {
+    if (data.isPulsing) {
+      void controls.start({ scale: [1, 1.15, 1], transition: { duration: 0.15, ease: 'easeInOut' } })
+    }
+  }, [data.isPulsing, controls])
+
+  const borderColor = selected ? style.color : data.hasError ? '#ef4444' : '#e5e7eb'
+
+  // Fix 3 (Req 17): ring on search match in addition to path highlight and selection
+  const ringColor = data.isPathHighlighted ? '#f59e0b'
+    : data.isSearchMatch === true ? style.color
+    : selected ? style.color
+    : undefined
 
   return (
-    <div
+    <motion.div
+      animate={controls}
       title={data.label}
       style={{
         width: w,
         height: h,
         backgroundColor: style.bg,
-        border: `2px solid ${borderColor !== 'transparent' ? borderColor : '#e5e7eb'}`,
+        border: `2px solid ${borderColor}`,
         boxShadow: ringColor ? `0 0 0 3px ${ringColor}66` : selected ? `0 0 0 2px ${style.color}44` : undefined,
         borderRadius: data.nodeType === 'user' ? 14 : 8,
         display: 'flex',
@@ -31,8 +46,10 @@ function KGNodeComponent({ data, selected }: NodeProps<KGNodeData>) {
         justifyContent: 'center',
         padding: '6px 10px',
         cursor: 'pointer',
+        // Fix 1 (Req 14): opacity 0 for entering nodes; CSS transition handles 0→1 fade
+        // Fix 2 (Req 15): same transition used for collapse fade-out (via n.style on RF node)
         transition: 'box-shadow 0.15s, border-color 0.15s, opacity 0.15s',
-        opacity: data.isSearchMatch === false ? 0.2 : 1,
+        opacity: data.isEntering ? 0 : data.isSearchMatch === false ? 0.2 : 1,
         position: 'relative',
       }}
     >
@@ -117,8 +134,31 @@ function KGNodeComponent({ data, selected }: NodeProps<KGNodeData>) {
         />
       )}
 
+      {/* Fix 7 (EC 2): no-connections tooltip */}
+      {data.hasNoConnections && !data.isLoading && (
+        <span
+          style={{
+            position: 'absolute',
+            bottom: -22,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            fontSize: 9,
+            color: '#9ca3af',
+            backgroundColor: '#fff',
+            border: '1px solid #e5e7eb',
+            borderRadius: 4,
+            padding: '1px 5px',
+            whiteSpace: 'nowrap',
+            pointerEvents: 'none',
+            zIndex: 10,
+          }}
+        >
+          No connections found
+        </span>
+      )}
+
       <Handle type="source" position={Position.Bottom} style={{ opacity: 0, pointerEvents: 'none' }} />
-    </div>
+    </motion.div>
   )
 }
 

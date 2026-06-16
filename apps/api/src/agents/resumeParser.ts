@@ -92,7 +92,7 @@ Rules:
 Resume text:
 ${input.pdfText.slice(0, 8_000)}
 
-Extract the complete structured profile.`
+Extract the complete structured profile and return it as a JSON object.`
 
   let parsed: ResumeParsed
   let modelKind: string

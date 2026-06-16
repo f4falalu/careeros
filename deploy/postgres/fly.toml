@@ -8,14 +8,19 @@ primary_region = 'iad'
   POSTGRES_DB = 'careeros'
   PGDATA = '/data/pgdata'
 
-# POSTGRES_PASSWORD is set via: fly secrets set POSTGRES_PASSWORD=<password> --app careeros-db
-
 [[mounts]]
   source = 'careeros_db_data'
   destination = '/data'
 
-# No [[services]] needed — postgres is reached via private networking only
-# (careeros-db.internal:5432 from other apps in the same Fly org)
+# TCP service keeps the machine running and accessible internally as
+# careeros-db.internal:5432 via Fly private networking.
+[[services]]
+  protocol = 'tcp'
+  internal_port = 5432
+  auto_stop_machines = false
+  min_machines_running = 1
+
+  # No [[services.ports]] — no public exposure, internal only.
 
 [[vm]]
   size = 'shared-cpu-1x'

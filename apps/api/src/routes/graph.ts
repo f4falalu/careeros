@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { graphService, memoryService } from '../services/index.js'
+import type { GraphEnrichment } from '../services/graph.js'
 
 const app = new Hono()
 
@@ -81,6 +82,14 @@ app.get('/graph/paths', async (c) => {
   if (!from || !to) return c.json({ error: 'from and to query params are required' }, 400)
   const path = await graphService.findPath(userId, from, to)
   return c.json({ path })
+})
+
+// POST /graph/enrich — upsert nodes and edges into the user's graph
+app.post('/graph/enrich', async (c) => {
+  const userId = c.get('userId')
+  const body = await c.req.json() as GraphEnrichment
+  await graphService.enrich(userId, body)
+  return c.json({ ok: true })
 })
 
 export { app as graphRoutes }

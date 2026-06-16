@@ -1,5 +1,5 @@
 'use client'
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { ReactFlowProvider } from 'reactflow'
 import { useQuery } from '@tanstack/react-query'
@@ -23,6 +23,14 @@ const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
 ]
 
 export default function CareerIntelligencePage() {
+  return (
+    <Suspense>
+      <CareerIntelligenceContent />
+    </Suspense>
+  )
+}
+
+function CareerIntelligenceContent() {
   const searchParams = useSearchParams()
   // pathTo may be an opportunity entityId (from match badge link)
   const pathToEntityId = searchParams.get('pathTo') ?? undefined
@@ -126,3 +134,4 @@ export default function CareerIntelligencePage() {
     </div>
   )
 }
+

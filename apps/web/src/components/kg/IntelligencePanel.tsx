@@ -5,14 +5,21 @@ import { useQuery } from '@tanstack/react-query'
 import Link from 'next/link'
 import { X, ExternalLink, AlertTriangle, RefreshCw, Zap, Target } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { KGNode, KGEdge, KGInference } from '@/lib/api'
+import type { KGNode, KGEdge } from '@/lib/api'
 import { NODE_TYPE_STYLES, truncateLabel, getEntityPath } from './types'
+
+interface PathStep {
+  label: string
+  nodeType: string
+  relationship?: string
+}
 
 interface IntelligencePanelProps {
   nodeId: string
   onClose: () => void
   onWhyMatch?: (nodeId: string) => void
   isMobile: boolean
+  pathChain?: PathStep[]
 }
 
 function EvidenceItem({ item }: { item: unknown }) {
@@ -28,12 +35,23 @@ function EvidenceItem({ item }: { item: unknown }) {
   return null
 }
 
-export function IntelligencePanel({ nodeId, onClose, onWhyMatch, isMobile }: IntelligencePanelProps) {
+export function IntelligencePanel({ nodeId, onClose, onWhyMatch, isMobile, pathChain }: IntelligencePanelProps) {
   const panelRef = useRef<HTMLDivElement>(null)
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['kg-node-detail', nodeId],
     queryFn: () => api.graph.node(nodeId),
+    staleTime: 60_000,
+  })
+
+  const node: KGNode | undefined = data?.node
+  const edges: KGEdge[] = data?.edges ?? []
+
+  // Fix 4 (Req 21): fetch real capability gaps from the dedicated endpoint
+  const { data: capabilityGaps = [] } = useQuery({
+    queryKey: ['graph-gaps', node?.entityId],
+    queryFn: () => api.graph.gaps(node!.entityId!),
+    enabled: node?.type === 'opportunity' && !!node.entityId,
     staleTime: 60_000,
   })
 
@@ -44,25 +62,13 @@ export function IntelligencePanel({ nodeId, onClose, onWhyMatch, isMobile }: Int
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  const node: KGNode | undefined = data?.node
-  const edges: KGEdge[] = data?.edges ?? []
-  const inferences: KGInference[] = data?.inferences ?? []
-
   const style = NODE_TYPE_STYLES[node?.type ?? ''] ?? { color: '#9ca3af', bg: '#f9fafb', size: 'md' as const }
-  const entityPath = node ? getEntityPath(node.type, node.id) : null
+  // Fix 4 (Req 21): use entityId so opportunity links resolve to the DB record, not the graph node UUID
+  const entityPath = node ? getEntityPath(node.type, node.entityId ?? node.id) : null
 
-  // Highest confidence edge
   const maxConf = edges.length > 0 ? Math.max(...edges.map((e) => e.confidence)) : null
-
-  // All evidence from all edges
   const allEvidence = edges.flatMap((e) => e.evidence).filter(Boolean).slice(0, 8)
 
-  // Capability gaps: for opportunity nodes — look for inferences tagged weakness
-  const capabilityGaps = node?.type === 'opportunity'
-    ? inferences.filter((i) => i.type === 'weakness').slice(0, 5)
-    : []
-
-  // Related opportunities: for skill/project nodes — opportunity-typed inferences nearby
   const relatedOpps = (node?.type === 'skill' || node?.type === 'project')
     ? edges
         .filter((e) => e.relationship === 'MATCHES' || e.relationship === 'TARGETS' || e.relationship === 'REQUIRED_BY')
@@ -149,6 +155,35 @@ export function IntelligencePanel({ nodeId, onClose, onWhyMatch, isMobile }: Int
 
         {!isLoading && !isError && node && (
           <>
+            {/* Fix 6 (Req 26): path chain displayed after animation completes */}
+            {pathChain && pathChain.length > 1 && (
+              <section>
+                <p className="text-[10.5px] font-600 uppercase tracking-[0.06em] text-[var(--color-faint)] mb-2">
+                  Evidence Path
+                </p>
+                <div className="space-y-0">
+                  {pathChain.map((step, i) => (
+                    <div key={i}>
+                      <div className="flex items-center gap-2">
+                        <div
+                          className="w-2 h-2 rounded-full shrink-0"
+                          style={{ backgroundColor: NODE_TYPE_STYLES[step.nodeType]?.color ?? '#9ca3af' }}
+                        />
+                        <span className="text-[12px] font-medium text-[var(--color-text)]">{step.label}</span>
+                        <span className="text-[9.5px] text-[var(--color-faint)] uppercase">{step.nodeType}</span>
+                      </div>
+                      {step.relationship && (
+                        <div className="flex items-center gap-2 ml-1 my-0.5">
+                          <div className="w-px h-3 bg-[var(--color-border)] ml-0.5" />
+                          <span className="text-[10px] text-[var(--color-faint)] font-mono">{step.relationship}</span>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
             {/* Evidence */}
             {allEvidence.length > 0 && (
               <section>
@@ -163,7 +198,7 @@ export function IntelligencePanel({ nodeId, onClose, onWhyMatch, isMobile }: Int
               </section>
             )}
 
-            {allEvidence.length === 0 && (
+            {allEvidence.length === 0 && (!pathChain || pathChain.length === 0) && (
               <p className="text-[12px] text-[var(--color-faint)] italic">No evidence recorded for this node yet.</p>
             )}
 
@@ -185,10 +220,10 @@ export function IntelligencePanel({ nodeId, onClose, onWhyMatch, isMobile }: Int
                       Capability Gaps
                     </p>
                     <div className="space-y-1">
-                      {capabilityGaps.map((gap) => (
-                        <div key={gap.id} className="flex items-center gap-2 text-[12px] text-amber-700">
+                      {capabilityGaps.map((gap, i) => (
+                        <div key={i} className="flex items-center gap-2 text-[12px] text-amber-700">
                           <AlertTriangle size={11} className="shrink-0" />
-                          {gap.label}
+                          {gap}
                         </div>
                       ))}
                     </div>

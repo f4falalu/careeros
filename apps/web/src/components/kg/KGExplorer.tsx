@@ -1,5 +1,5 @@
 'use client'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactFlow, {
   useNodesState,
   useEdgesState,
@@ -42,6 +42,9 @@ function toRFNode(n: KGNode, extra: Partial<KGNodeData> = {}): RFNode {
       hasError: false,
       isPathHighlighted: false,
       isSearchMatch: null,
+      isPulsing: false,
+      isEntering: false,
+      hasNoConnections: false,
       ...extra,
     },
   }
@@ -58,6 +61,7 @@ function toRFEdge(e: KGEdge, extra: Partial<KGEdgeData> = {}): RFEdge {
       confidence: e.confidence,
       evidence: e.evidence,
       isPathHighlighted: false,
+      isNew: false,
       ...extra,
     },
     style: { opacity: e.confidence * 0.7 + 0.3 },
@@ -91,6 +95,25 @@ export function KGExplorer({ initialPathTo, jumpToNodeId, initialSearch }: KGExp
   const [activePath, setActivePath] = useState<string[]>([])
   const [pathAnimating, setPathAnimating] = useState(false)
   const [totalNodes, setTotalNodes] = useState(0)
+
+  // Fix 6 (Req 26): path chain shown in panel after animation completes
+  const pathChain = useMemo(() => {
+    if (activePath.length === 0) return []
+    return activePath.map((nid, i) => {
+      const node = rfNodes.find((n) => n.id === nid)
+      const edge = i < activePath.length - 1
+        ? rfEdges.find((e) =>
+            (e.source === nid && e.target === activePath[i + 1]) ||
+            (e.target === nid && e.source === activePath[i + 1]),
+          )
+        : undefined
+      return {
+        label: node?.data.label ?? nid,
+        nodeType: node?.data.nodeType ?? '',
+        relationship: edge?.data?.relationship,
+      }
+    })
+  }, [activePath, rfNodes, rfEdges])
   const [isMobile, setIsMobile] = useState(false)
   const { fitView } = useReactFlow()
   const debounceRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
@@ -189,30 +212,84 @@ export function KGExplorer({ initialPathTo, jumpToNodeId, initialSearch }: KGExp
 
   const expandNodeById = useCallback(async (nodeId: string) => {
     if (inFlightRef.current.has(nodeId)) return
-
     inFlightRef.current.add(nodeId)
+
+    // Fix 1 (Req 14): start pulse animation on the clicked node
     setRFNodes((prev) =>
-      prev.map((n) => n.id === nodeId ? { ...n, data: { ...n.data, isLoading: true, hasError: false } } : n),
+      prev.map((n) => n.id === nodeId
+        ? { ...n, data: { ...n.data, isLoading: true, hasError: false, isPulsing: true, hasNoConnections: false } }
+        : n),
     )
+    const pulseTimer = setTimeout(() => {
+      setRFNodes((prev) =>
+        prev.map((n) => n.id === nodeId ? { ...n, data: { ...n.data, isPulsing: false } } : n),
+      )
+    }, 200)
 
     try {
-      // We need access to current nodes/edges without a closure — capture via a promise
-      const data = await api.graph.subgraph({ root: nodeId, depth: 1 })
+      const subgraphData = await api.graph.subgraph({ root: nodeId, depth: 1 })
+
+      // Track which node/edge IDs are genuinely new (populated synchronously in setState callbacks)
+      const newNodeIds: string[] = []
+      const newEdgeIds: string[] = []
+
       setRFNodes((currentNodes) => {
         setRFEdges((currentEdges) => {
-          mergeSubgraph(data.nodes, data.edges, currentNodes, currentEdges)
-          return currentEdges // setRFEdges returns are ignored here; mergeSubgraph calls setRFEdges
+          const existingNodeIds = new Set(currentNodes.map((n) => n.id))
+          const existingEdgeIds = new Set(currentEdges.map((e) => e.id))
+          subgraphData.nodes.forEach((n) => {
+            if (!existingNodeIds.has(n.id) && n.id !== nodeId) newNodeIds.push(n.id)
+          })
+          subgraphData.edges.forEach((e) => {
+            if (!existingEdgeIds.has(e.id)) newEdgeIds.push(e.id)
+          })
+          mergeSubgraph(subgraphData.nodes, subgraphData.edges, currentNodes, currentEdges)
+          return currentEdges
         })
         return currentNodes.map((n) =>
-          n.id === nodeId ? { ...n, data: { ...n.data, isLoading: false, isExpanded: true, hasError: false } } : n,
+          n.id === nodeId
+            ? { ...n, data: { ...n.data, isLoading: false, isExpanded: true, hasError: false, hasNoConnections: newNodeIds.length === 0 } }
+            : n,
         )
       })
+
+      // Apply entering/new flags once the merge has settled in the DOM
+      requestAnimationFrame(() => {
+        const newNodeSet = new Set(newNodeIds)
+        const newEdgeSet = new Set(newEdgeIds)
+        if (newNodeSet.size > 0) {
+          setRFNodes((prev) =>
+            prev.map((n) => newNodeSet.has(n.id) ? { ...n, data: { ...n.data, isEntering: true } } : n),
+          )
+          // Fix 1 (Req 14): fade neighbors in (0→1, 150ms via CSS transition on opacity)
+          setTimeout(() => {
+            setRFNodes((prev) =>
+              prev.map((n) => newNodeSet.has(n.id) ? { ...n, data: { ...n.data, isEntering: false } } : n),
+            )
+          }, 200)
+        }
+        if (newEdgeSet.size > 0) {
+          setRFEdges((prev) =>
+            prev.map((e) => newEdgeSet.has(e.id) ? { ...e, data: { ...e.data!, isNew: true } } : e),
+          )
+          // Fix 5 (Req 25): edge draw animation completes at 200ms, then switch back to BaseEdge
+          setTimeout(() => {
+            setRFEdges((prev) =>
+              prev.map((e) => newEdgeSet.has(e.id) ? { ...e, data: { ...e.data!, isNew: false } } : e),
+            )
+          }, 300)
+        }
+      })
+
       setExpandedIds((prev) => new Set(prev).add(nodeId))
-      setTotalNodes(data.total)
+      setTotalNodes(subgraphData.total)
       setTimeout(() => fitView({ padding: 0.15, duration: 350 }), 150)
     } catch {
+      clearTimeout(pulseTimer)
       setRFNodes((prev) =>
-        prev.map((n) => n.id === nodeId ? { ...n, data: { ...n.data, isLoading: false, hasError: true } } : n),
+        prev.map((n) => n.id === nodeId
+          ? { ...n, data: { ...n.data, isLoading: false, hasError: true, isPulsing: false } }
+          : n),
       )
     } finally {
       inFlightRef.current.delete(nodeId)
@@ -221,22 +298,55 @@ export function KGExplorer({ initialPathTo, jumpToNodeId, initialSearch }: KGExp
 
   const collapseNode = useCallback((nodeId: string) => {
     if (activePath.includes(nodeId)) setActivePath([])
+    setExpandedIds((prev) => { const s = new Set(prev); s.delete(nodeId); return s })
+
+    // Fix 2 (Req 15): two-phase collapse — fade orphans out, then remove after 160ms
+    let hasOrphans = false  // set synchronously inside the setRFNodes callback below
 
     setRFEdges((prevEdges) => {
       const remainingEdges = prevEdges.filter((e) => e.source !== nodeId && e.target !== nodeId)
+
       setRFNodes((prevNodes) => {
         const userNodeId = prevNodes.find((n) => n.data.nodeType === 'user')?.id
         const reachable = userNodeId ? reachableFrom(userNodeId, remainingEdges) : new Set<string>()
-        reachable.add(nodeId) // keep the collapsed node itself
+        reachable.add(nodeId)
+        const orphanIds = new Set(prevNodes.map((n) => n.id).filter((id) => !reachable.has(id)))
+        hasOrphans = orphanIds.size > 0
 
-        const keptNodes = prevNodes
-          .filter((n) => reachable.has(n.id))
-          .map((n) => n.id === nodeId ? { ...n, data: { ...n.data, isExpanded: false } } : n)
-        return applyDagreLayout(keptNodes, remainingEdges)
+        if (!hasOrphans) {
+          // Immediate: no orphans to fade
+          const keptNodes = prevNodes.map((n) =>
+            n.id === nodeId ? { ...n, data: { ...n.data, isExpanded: false } } : n,
+          )
+          return applyDagreLayout(keptNodes, remainingEdges)
+        }
+
+        // Phase 2: after fade completes, remove orphans and re-layout
+        setTimeout(() => {
+          setRFEdges(remainingEdges)
+          setRFNodes((prev) => {
+            const kept = prev
+              .filter((n) => reachable.has(n.id))
+              .map((n) =>
+                n.id === nodeId
+                  ? { ...n, data: { ...n.data, isExpanded: false }, style: undefined }
+                  : n,
+              )
+            return applyDagreLayout(kept, remainingEdges)
+          })
+        }, 160)
+
+        // Phase 1: mark orphans with opacity 0 (CSS transition on the RF node wrapper fades them)
+        return prevNodes.map((n) =>
+          orphanIds.has(n.id)
+            ? { ...n, style: { opacity: 0, transition: 'opacity 0.15s' } as React.CSSProperties }
+            : n,
+        )
       })
-      return remainingEdges
+
+      // hasOrphans is now set (setRFNodes callback ran synchronously above)
+      return hasOrphans ? prevEdges : remainingEdges
     })
-    setExpandedIds((prev) => { const s = new Set(prev); s.delete(nodeId); return s })
   }, [activePath, setRFNodes, setRFEdges])
 
   const handleNodeClick = useCallback((_: React.MouseEvent, node: RFNode) => {
@@ -389,6 +499,7 @@ export function KGExplorer({ initialPathTo, jumpToNodeId, initialSearch }: KGExp
             onClose={() => setSelectedNodeId(null)}
             onWhyMatch={handleWhyMatch}
             isMobile={isMobile}
+            pathChain={!pathAnimating && pathChain.length > 0 ? pathChain : undefined}
           />
         )}
       </AnimatePresence>

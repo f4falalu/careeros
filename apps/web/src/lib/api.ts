@@ -296,6 +296,8 @@ export const api = {
       req<{ node: KGNode; edges: KGEdge[]; inferences: KGInference[] }>(`/graph/node/${id}`),
     paths: (from: string, to: string) =>
       req<{ path: string[] }>(`/graph/paths?from=${from}&to=${to}`),
+    gaps: (opportunityId: string) =>
+      req<string[]>(`/graph/gaps?opportunityId=${encodeURIComponent(opportunityId)}`),
     inferences: () =>
       req<Record<string, KGInference[]>>('/graph/inferences'),
     infer: () =>

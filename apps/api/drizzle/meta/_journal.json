@@ -15,6 +15,27 @@
       "when": 1781043846947,
       "tag": "0001_autonomy_and_auth_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1781604426000,
+      "tag": "0002_profile_extended",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1781604427000,
+      "tag": "0003_channel_link_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1781604428000,
+      "tag": "0004_v2_intelligence",
+      "breakpoints": true
     }
   ]
 }
