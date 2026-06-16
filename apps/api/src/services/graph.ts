@@ -125,7 +125,7 @@ export class GraphService {
           eq(schema.graphNodes.type, node.type as typeof schema.graphNodes.type._.data),
           node.entityId
             ? eq(schema.graphNodes.entityId, node.entityId)
-            : isNull(schema.graphNodes.entityId),
+            : and(isNull(schema.graphNodes.entityId), eq(schema.graphNodes.label, node.label)),
         ),
       )
       .limit(1)
