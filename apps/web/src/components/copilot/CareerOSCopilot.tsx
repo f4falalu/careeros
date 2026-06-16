@@ -123,9 +123,9 @@ function ApprovalCard({
 
   const labels: Record<string, string> = { approve: 'Approve', review: 'Review', reject: 'Reject' }
   const variants: Record<string, string> = {
-    approve: 'bg-primary text-primary-foreground',
-    review: 'bg-muted text-foreground border border-border',
-    reject: 'bg-destructive text-destructive-foreground',
+    approve: 'bg-[var(--color-text)] text-[var(--color-bg)]',
+    review: 'bg-[var(--color-surface-sunken)] text-[var(--color-text)] border border-[var(--color-border)]',
+    reject: 'bg-danger text-white',
   }
 
   return (
@@ -135,7 +135,7 @@ function ApprovalCard({
           key={action}
           onClick={() => handleAction(action)}
           disabled={pending !== null}
-          className={`rounded px-2 py-1 text-xs hover:opacity-80 disabled:opacity-40 ${variants[action] ?? 'bg-muted text-foreground'}`}
+          className={`rounded px-2 py-1 text-xs hover:opacity-80 disabled:opacity-40 ${variants[action] ?? 'bg-[var(--color-surface-sunken)] text-[var(--color-text)]'}`}
         >
           {pending === action ? `${labels[action] ?? action}…` : (labels[action] ?? action)}
         </button>
@@ -252,7 +252,7 @@ export function CareerOSCopilot() {
       {/* Floating trigger button */}
       <button
         onClick={() => setOpen((v) => !v)}
-        className="fixed bottom-6 right-6 z-50 flex h-12 w-12 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg hover:opacity-90 transition-opacity"
+        className="fixed bottom-6 right-6 z-50 flex h-12 w-12 items-center justify-center rounded-full bg-[var(--color-text)] text-[var(--color-bg)] shadow-lg hover:opacity-90 transition-opacity"
         aria-label="Open CareerOS Copilot"
       >
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -262,20 +262,20 @@ export function CareerOSCopilot() {
 
       {/* Overlay panel */}
       {open && (
-        <div className="fixed bottom-20 right-6 z-50 flex w-[380px] flex-col rounded-xl border border-border bg-background shadow-2xl">
+        <div className="fixed bottom-20 right-6 z-50 flex w-[380px] flex-col rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] shadow-2xl">
           {/* Header */}
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <div className="flex items-center justify-between border-b border-[var(--color-border)] px-4 py-3">
             <div>
               <p className="text-sm font-semibold">CareerOS Copilot</p>
               {workspaceContext && (
-                <p className="text-xs text-muted-foreground capitalize">
+                <p className="text-xs text-[var(--color-muted)] capitalize">
                   Context: {workspaceContext.entityType as string}
                 </p>
               )}
             </div>
             <button
               onClick={() => setOpen(false)}
-              className="text-muted-foreground hover:text-foreground"
+              className="text-[var(--color-muted)] hover:text-[var(--color-text)]"
               aria-label="Close"
             >
               ×
@@ -288,13 +288,13 @@ export function CareerOSCopilot() {
             {messages.length >= historyLimit && (
               <button
                 onClick={handleLoadMore}
-                className="self-center rounded-md bg-muted px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
+                className="self-center rounded-md bg-[var(--color-surface-sunken)] px-3 py-1 text-xs text-[var(--color-muted)] hover:text-[var(--color-text)]"
               >
                 Load more
               </button>
             )}
             {messages.length === 0 && (
-              <p className="text-center text-xs text-muted-foreground">
+              <p className="text-center text-xs text-[var(--color-muted)]">
                 Ask me anything about your career — resumes, opportunities, gaps, strategy.
               </p>
             )}
@@ -306,8 +306,8 @@ export function CareerOSCopilot() {
                 <div
                   className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
                     m.role === 'user'
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-muted text-foreground'
+                      ? 'bg-[var(--color-text)] text-[var(--color-bg)]'
+                      : 'bg-[var(--color-surface-sunken)] text-[var(--color-text)]'
                   }`}
                 >
                   <p className="whitespace-pre-wrap">{m.content}</p>
@@ -323,7 +323,7 @@ export function CareerOSCopilot() {
             ))}
             {mutation.isPending && (
               <div className="flex justify-start">
-                <div className="rounded-lg bg-muted px-3 py-2 text-sm text-muted-foreground">
+                <div className="rounded-lg bg-[var(--color-surface-sunken)] px-3 py-2 text-sm text-[var(--color-muted)]">
                   Thinking...
                 </div>
               </div>
@@ -332,20 +332,20 @@ export function CareerOSCopilot() {
           </div>
 
           {/* Input */}
-          <div className="flex items-center gap-2 border-t border-border p-3">
+          <div className="flex items-center gap-2 border-t border-[var(--color-border)] p-3">
             <input
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Ask CareerOS..."
-              className="flex-1 rounded-md border border-input bg-background px-3 py-1.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              className="flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-surface-sunken)] text-[var(--color-text)] px-3 py-1.5 text-sm placeholder:text-[var(--color-faint)] focus:outline-none focus:border-[var(--color-muted)]"
               disabled={mutation.isPending}
             />
             <button
               onClick={handleSend}
               disabled={!input.trim() || mutation.isPending}
-              className="flex h-8 w-8 items-center justify-center rounded-md bg-primary text-primary-foreground disabled:opacity-40"
+              className="flex h-8 w-8 items-center justify-center rounded-md bg-[var(--color-text)] text-[var(--color-bg)] disabled:opacity-40"
               aria-label="Send"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

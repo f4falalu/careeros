@@ -4,8 +4,17 @@ import { eq, and, asc } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import type { InferInsertModel } from 'drizzle-orm'
 import { complete } from '../router/modelRouter.js'
+import { graphService } from '../services/index.js'
 
 const app = new Hono()
+
+// The web client (types + POST/PUT bodies + components) speaks snake_case, but
+// Drizzle rows come back camelCase. Convert top-level keys only — values like
+// `links`, `master_resume`, `career_questions` are JSON blobs whose inner keys
+// must stay untouched.
+const toSnake = (s: string) => s.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`)
+const snakeKeys = <T extends Record<string, unknown>>(row: T): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(row).map(([k, v]) => [toSnake(k), v]))
 
 // ── GET /profile ──────────────────────────────────────────────
 app.get('/', async (c) => {
@@ -21,9 +30,9 @@ app.get('/', async (c) => {
       .insert(schema.profiles)
       .values({ userId, masterResume: {}, tonePrefs: {} })
       .returning()
-    return c.json(created)
+    return c.json(snakeKeys(created))
   }
-  return c.json(profile)
+  return c.json(snakeKeys(profile))
 })
 
 // ── PUT /profile ──────────────────────────────────────────────
@@ -105,7 +114,7 @@ app.get('/skills', async (c) => {
     .select()
     .from(schema.skills)
     .where(eq(schema.skills.userId, userId))
-  return c.json(rows)
+  return c.json(rows.map(snakeKeys))
 })
 
 // ── POST /profile/skills ──────────────────────────────────────
@@ -186,7 +195,7 @@ app.get('/work-experiences', async (c) => {
     .from(schema.workExperiences)
     .where(eq(schema.workExperiences.userId, userId))
     .orderBy(asc(schema.workExperiences.sortOrder), asc(schema.workExperiences.createdAt))
-  return c.json(rows)
+  return c.json(rows.map(snakeKeys))
 })
 
 app.post('/work-experiences', async (c) => {
@@ -292,7 +301,7 @@ app.get('/education', async (c) => {
     .from(schema.educations)
     .where(eq(schema.educations.userId, userId))
     .orderBy(asc(schema.educations.sortOrder), asc(schema.educations.createdAt))
-  return c.json(rows)
+  return c.json(rows.map(snakeKeys))
 })
 
 app.post('/education', async (c) => {
@@ -393,7 +402,7 @@ app.get('/projects', async (c) => {
     .from(schema.profileProjects)
     .where(eq(schema.profileProjects.userId, userId))
     .orderBy(asc(schema.profileProjects.sortOrder), asc(schema.profileProjects.createdAt))
-  return c.json(rows)
+  return c.json(rows.map(snakeKeys))
 })
 
 app.post('/projects', async (c) => {
@@ -547,6 +556,100 @@ app.post('/enhance', async (c) => {
     return c.json({ enhanced: result.text.trim() })
   } catch (err) {
     return c.json({ code: 'enhance_failed', message: String(err) }, 500)
+  }
+})
+
+// ── POST /profile/suggest-goals ───────────────────────────────
+// Acts as a career advisor: reads the user's knowledge graph (career
+// patterns, themes, recommended moves) plus their profile, skills,
+// experience and projects, and proposes answers for each Career Goals
+// question. SUGGESTION ONLY — nothing is persisted. The client decides
+// what (if anything) to apply, and the user confirms via Save.
+const GOAL_QUESTIONS: { key: string; label: string }[] = [
+  { key: 'excites', label: 'What kind of work excites you?' },
+  { key: 'solving', label: 'What problem do you enjoy solving most?' },
+  { key: 'environment', label: 'What environments help you perform best?' },
+  { key: 'goals', label: 'What are your long-term career goals?' },
+  { key: 'why_move', label: 'Why are you considering a new role?' },
+]
+
+app.post('/suggest-goals', async (c) => {
+  const userId = c.get('userId')
+
+  const [[profile], skills, workExperiences, projects, patterns, careerMoves, inferences] =
+    await Promise.all([
+      db.select().from(schema.profiles).where(eq(schema.profiles.userId, userId)).limit(1),
+      db.select({ name: schema.skills.name }).from(schema.skills).where(eq(schema.skills.userId, userId)),
+      db
+        .select({ title: schema.workExperiences.title, company: schema.workExperiences.companyName, bullets: schema.workExperiences.bullets })
+        .from(schema.workExperiences)
+        .where(eq(schema.workExperiences.userId, userId))
+        .orderBy(asc(schema.workExperiences.sortOrder)),
+      db
+        .select({ title: schema.profileProjects.title, role: schema.profileProjects.role, outcome: schema.profileProjects.outcome })
+        .from(schema.profileProjects)
+        .where(eq(schema.profileProjects.userId, userId)),
+      graphService.findCareerPatterns(userId),
+      graphService.recommendCareerMoves(userId),
+      graphService.getInferences(userId),
+    ])
+
+  const themes = (inferences.theme ?? []).map((i) => i.label)
+  const interests = (inferences.interest ?? []).map((i) => i.label)
+  const experienceLines = workExperiences
+    .map((w) => `- ${w.title} at ${w.company}${(w.bullets ?? []).length ? `: ${(w.bullets ?? []).slice(0, 2).join('; ')}` : ''}`)
+    .join('\n')
+  const projectLines = projects
+    .map((p) => `- ${p.title}${p.role ? ` (${p.role})` : ''}${p.outcome ? ` → ${p.outcome}` : ''}`)
+    .join('\n')
+  const moveLines = careerMoves
+    .map((m) => `- ${m.roleType}: ${m.rationale}`)
+    .join('\n')
+
+  const prompt = `You are an expert career advisor. Using the evidence below — which is derived from the person's own profile and a knowledge graph of their experience — propose thoughtful, specific, first-person answers to five career-direction questions. Suggest the most suitable career goal, aspiration and ambition for this person. Ground every suggestion in the evidence; never invent jobs, skills or achievements they don't have. Be concrete and encouraging, 1–2 sentences per answer.
+
+== EVIDENCE ==
+Headline: ${profile?.headline ?? '(none)'}
+Bio: ${profile?.bio ?? '(none)'}
+Skills: ${skills.map((s) => s.name).join(', ') || '(none)'}
+Industries: ${patterns.industries.join(', ') || '(unknown)'}
+Roles held: ${patterns.roles.join(', ') || '(unknown)'}
+Graph-inferred strengths: ${patterns.strengths.join(', ') || '(none yet)'}
+Career themes: ${themes.join(', ') || '(none yet)'}
+Demonstrated interests: ${interests.join(', ') || '(none yet)'}
+Experience:
+${experienceLines || '(none)'}
+Projects:
+${projectLines || '(none)'}
+Recommended next moves (from graph):
+${moveLines || '(none)'}
+
+== QUESTIONS ==
+${GOAL_QUESTIONS.map((q) => `${q.key}: ${q.label}`).join('\n')}
+
+Return ONLY a JSON object with these exact keys: ${GOAL_QUESTIONS.map((q) => `"${q.key}"`).join(', ')}, plus a "rationale" key (one sentence on how the knowledge graph shaped these suggestions). No markdown, no commentary.`
+
+  try {
+    const result = await complete(prompt, {
+      taskType: 'career_advisor',
+      containsPersonalData: true,
+      allowCloud: true,
+      userId,
+    })
+
+    const cleaned = result.text.trim().replace(/^```json?\n?/, '').replace(/\n?```$/, '')
+    const parsed = JSON.parse(cleaned) as Record<string, unknown>
+
+    const suggestions: Record<string, string> = {}
+    for (const q of GOAL_QUESTIONS) {
+      const v = parsed[q.key]
+      if (typeof v === 'string' && v.trim()) suggestions[q.key] = v.trim()
+    }
+
+    const rationale = typeof parsed.rationale === 'string' ? parsed.rationale.trim() : ''
+    return c.json({ suggestions, rationale })
+  } catch (err) {
+    return c.json({ code: 'suggest_failed', message: String(err) }, 500)
   }
 })
 

@@ -139,6 +139,10 @@ export const api = {
       content: string
       context?: { title?: string; company?: string }
     }) => req<{ enhanced: string }>('/profile/enhance', { method: 'POST', body: JSON.stringify(data) }),
+    suggestGoals: () =>
+      req<{ suggestions: Record<string, string>; rationale: string }>('/profile/suggest-goals', {
+        method: 'POST',
+      }),
     skills: {
       list: () => req<Skill[]>('/profile/skills'),
       upsert: (data: { name: string; proficiency?: number; years?: number } | Array<{ name: string; proficiency?: number; years?: number }>) =>
