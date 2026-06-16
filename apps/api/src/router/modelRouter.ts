@@ -279,8 +279,8 @@ export async function generateStructured<T>(
       const route = await loadUserRoute(opts.userId, taskType)
       if (route) {
         const handle = buildHandle(route.provider, route.model, route.apiKey, route.baseUrl)
-        const { object } = await generateObject({ model: handle, prompt, schema })
-        return { data: object, modelKind: 'cloud', modelName: route.model, reason: `user route: ${route.provider}/${route.model}` }
+        const data = await cloudStructured(handle, prompt, schema, taskType)
+        return { data, modelKind: 'cloud', modelName: route.model, reason: `user route: ${route.provider}/${route.model}` }
       }
     } catch (err) {
       console.warn('[modelRouter] user route load failed, falling back:', errMsg(err))
@@ -290,17 +290,51 @@ export async function generateStructured<T>(
   const route = decideRoute(taskType, opts.containsPersonalData ?? false, opts.allowCloud ?? false)
 
   if (route.modelKind === 'cloud') {
-    const { object } = await generateObject({ model: envCloudHandle(route.modelName), prompt, schema })
-    return { data: object, modelKind: route.modelKind, modelName: route.modelName, reason: route.reason }
+    const data = await cloudStructured(envCloudHandle(route.modelName), prompt, schema, taskType)
+    return { data, modelKind: route.modelKind, modelName: route.modelName, reason: route.reason }
   }
 
   try {
-    return await localStructured(prompt, schema, route)
+    return await localStructured(prompt, schema, route, taskType)
   } catch (err) {
     if (!canFailoverToCloud(opts)) throw err
     const modelName = envCloudModel()
-    const { object } = await generateObject({ model: envCloudHandle(modelName), prompt, schema })
-    return { data: object, modelKind: 'cloud', modelName, reason: `failover: local failed (${errMsg(err)})` }
+    const data = await cloudStructured(envCloudHandle(modelName), prompt, schema, taskType)
+    return { data, modelKind: 'cloud', modelName, reason: `failover: local failed (${errMsg(err)})` }
+  }
+}
+
+// Cloud structured generation. Tries the SDK's schema-constrained generateObject
+// first; many open models (e.g. Groq llama-3.3-70b) don't support native
+// structured output, so on a schema mismatch we retry as free text and parse
+// leniently — mirroring the local path's tolerance.
+// Max output tokens for structured generation. Resume parses emit every bullet
+// verbatim, so the JSON can be large — a low default would truncate it.
+const STRUCTURED_MAX_TOKENS = 8192
+
+async function cloudStructured<T>(
+  handle: ReturnType<typeof buildHandle>,
+  prompt: string,
+  schema: z.ZodType<T>,
+  label = 'generic',
+): Promise<T> {
+  try {
+    const { object } = await generateObject({ model: handle, prompt, schema, maxOutputTokens: STRUCTURED_MAX_TOKENS })
+    return object
+  } catch (err) {
+    const { text } = await generateText({
+      model: handle,
+      prompt: `${prompt}\n\nReturn ONLY a single valid JSON object — no markdown fences, no prose.`,
+      maxOutputTokens: STRUCTURED_MAX_TOKENS,
+    })
+    const parsed = tryParseJson(text)
+    if (parsed === null) {
+      console.warn(`[modelRouter] ${label}: free-text fallback produced no parseable JSON. Raw: ${text.slice(0, 300)}`)
+      throw err
+    }
+    const data = coerceToSchema(parsed, schema, label)
+    if (data === null) throw err
+    return data
   }
 }
 
@@ -308,6 +342,7 @@ async function localStructured<T>(
   prompt: string,
   schema: z.ZodType<T>,
   route: RouteDecision,
+  label = 'generic',
 ): Promise<{ data: T; modelKind: ModelKind; modelName: string; reason: string }> {
   const systemHint = `Respond with a single valid JSON object and NOTHING else — no markdown fences, no prose, no explanation.`
   const text = await ollamaGenerate(`${systemHint}\n\n${prompt}`, route.modelName)
@@ -317,26 +352,55 @@ async function localStructured<T>(
     throw new Error(`Model did not return a JSON object. Raw: ${text.slice(0, 300)}`)
   }
 
-  const result = schema.safeParse(parsed)
-  if (result.success) {
-    return { data: result.data, modelKind: route.modelKind, modelName: route.modelName, reason: route.reason }
+  // Avoid a second full inference pass — parse leniently so callers get
+  // partial data even when an open model returns a slightly off-schema object.
+  const data = coerceToSchema(parsed, schema, label)
+  if (data === null) {
+    throw new Error(`Schema validation failed. Raw: ${JSON.stringify(parsed).slice(0, 300)}`)
+  }
+  return { data, modelKind: route.modelKind, modelName: route.modelName, reason: route.reason }
+}
+
+// Validate parsed JSON against a schema, tolerating the kinds of mistakes open
+// models make: drops top-level fields and individual array elements that fail
+// validation, then re-validates (fields with defaults backfill). Returns null
+// only if the result still doesn't satisfy the schema.
+function coerceToSchema<T>(parsed: unknown, schema: z.ZodType<T>, label = 'generic'): T | null {
+  const direct = schema.safeParse(parsed)
+  if (direct.success) return direct.data
+  if (typeof parsed !== 'object' || parsed === null) return null
+
+  const cleaned: Record<string, unknown> = { ...(parsed as Record<string, unknown>) }
+  const dropIndices = new Map<string, Set<number>>()
+  for (const issue of direct.error.issues) {
+    const [top, second] = issue.path
+    if (issue.path.length === 1 && typeof top === 'string') {
+      delete cleaned[top]
+    } else if (typeof top === 'string' && typeof second === 'number' && Array.isArray(cleaned[top])) {
+      if (!dropIndices.has(top)) dropIndices.set(top, new Set())
+      dropIndices.get(top)!.add(second)
+    }
+  }
+  for (const [field, indices] of dropIndices) {
+    cleaned[field] = (cleaned[field] as unknown[]).filter((_, i) => !indices.has(i))
   }
 
-  // For local models avoid a second full inference pass — try lenient parse instead.
-  // Strip fields that failed validation and re-parse so callers get partial data.
-  if (typeof parsed === 'object' && parsed !== null) {
-    const issues = result.error.issues
-    const cleaned: Record<string, unknown> = { ...(parsed as Record<string, unknown>) }
-    for (const issue of issues) {
-      if (issue.path.length === 1) delete cleaned[issue.path[0] as string]
-    }
-    const lenientResult = schema.safeParse(cleaned)
-    if (lenientResult.success) {
-      return { data: lenientResult.data, modelKind: route.modelKind, modelName: route.modelName, reason: route.reason }
-    }
+  // Surface what we discarded — otherwise a model that returns off-schema items
+  // produces a silent empty result that's indistinguishable from "nothing found".
+  const droppedItems = [...dropIndices].map(([f, s]) => `${f}[${s.size}]`).join(', ')
+  if (droppedItems) {
+    console.warn(
+      `[modelRouter] ${label}: dropped invalid array items (${droppedItems}). ` +
+      `First issue: ${direct.error.issues[0]?.path.join('.')} — ${direct.error.issues[0]?.message}`,
+    )
   }
 
-  throw new Error(`Schema validation failed: ${result.error.message}`)
+  const lenient = schema.safeParse(cleaned)
+  if (!lenient.success) {
+    console.warn(`[modelRouter] ${label}: schema validation failed after coercion — ${lenient.error.issues[0]?.message}`)
+    return null
+  }
+  return lenient.data
 }
 
 function tryParseJson(text: string): unknown {
