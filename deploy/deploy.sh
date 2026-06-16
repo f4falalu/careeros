@@ -71,27 +71,27 @@ cd "$REPO_ROOT"
 
 # ── Step 4: API (careeros-api) ────────────────────────────────────────────────
 echo ""
-echo "── [4/5] API (careeros-api) ───────────────────────────────────────────────"
-if ! fly apps list | grep -q careeros-api; then
-  fly apps create careeros-api
-  fly volumes create careeros_api_data --region iad --size 1 --app careeros-api
+echo "── [4/5] API (careeros-api-f4) ────────────────────────────────────────────"
+if ! fly apps list | grep -q careeros-api-f4; then
+  fly apps create careeros-api-f4
+  fly volumes create careeros_api_data --region iad --size 1 --app careeros-api-f4
 fi
 
 # Set API secrets
 fly secrets set \
   APP_SECRET="$APP_SECRET" \
-  CORS_ORIGINS="https://careeros-web.fly.dev" \
+  CORS_ORIGINS="https://careeros-web-f4.fly.dev" \
   GROQ_API_KEY="$GROQ_API_KEY" \
-  --app careeros-api
+  --app careeros-api-f4
 
 if [[ -n "$DATABASE_URL" ]]; then
-  fly secrets set DATABASE_URL="$DATABASE_URL" --app careeros-api
+  fly secrets set DATABASE_URL="$DATABASE_URL" --app careeros-api-f4
 fi
 if [[ -n "$REDIS_URL" ]]; then
-  fly secrets set REDIS_URL="$REDIS_URL" --app careeros-api
+  fly secrets set REDIS_URL="$REDIS_URL" --app careeros-api-f4
 fi
 if [[ -n "$TELEGRAM_BOT_TOKEN" ]]; then
-  fly secrets set TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" --app careeros-api
+  fly secrets set TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" --app careeros-api-f4
 fi
 
 # Run DB migrations before deploying the API
@@ -99,24 +99,24 @@ echo "  Running Drizzle migrations..."
 fly ssh console --app careeros-db --command \
   "psql -U careeros -c 'CREATE EXTENSION IF NOT EXISTS vector;'" 2>/dev/null || true
 
-cd "$REPO_ROOT/apps/api" && fly deploy --app careeros-api
+cd "$REPO_ROOT/apps/api" && fly deploy --app careeros-api-f4
 cd "$REPO_ROOT"
 
-# ── Step 5: Web (careeros-web) ────────────────────────────────────────────────
+# ── Step 5: Web (careeros-web-f4) ─────────────────────────────────────────────
 echo ""
-echo "── [5/5] Web (careeros-web) ───────────────────────────────────────────────"
-if ! fly apps list | grep -q careeros-web; then
-  fly apps create careeros-web
+echo "── [5/5] Web (careeros-web-f4) ────────────────────────────────────────────"
+if ! fly apps list | grep -q careeros-web-f4; then
+  fly apps create careeros-web-f4
 fi
 
-cd "$REPO_ROOT/apps/web" && fly deploy --app careeros-web \
-  --build-arg NEXT_PUBLIC_API_URL="https://careeros-api.fly.dev" \
-  --build-arg NEXT_PUBLIC_WS_URL="wss://careeros-api.fly.dev" \
+cd "$REPO_ROOT/apps/web" && fly deploy --app careeros-web-f4 \
+  --build-arg NEXT_PUBLIC_API_URL="https://careeros-api-f4.fly.dev" \
+  --build-arg NEXT_PUBLIC_WS_URL="wss://careeros-api-f4.fly.dev" \
   --build-arg NEXT_PUBLIC_APP_SECRET="$APP_SECRET"
 cd "$REPO_ROOT"
 
 echo ""
 echo "✓ Deployment complete!"
-echo "  Web:  https://careeros-web.fly.dev"
-echo "  API:  https://careeros-api.fly.dev"
-echo "  Health: https://careeros-api.fly.dev/health"
+echo "  Web:  https://careeros-web-f4.fly.dev"
+echo "  API:  https://careeros-api-f4.fly.dev"
+echo "  Health: https://careeros-api-f4.fly.dev/health"

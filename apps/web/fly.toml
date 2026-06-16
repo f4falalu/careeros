@@ -1,4 +1,4 @@
-app = 'careeros-web'
+app = 'careeros-web-f4'
 primary_region = 'iad'
 
 [build]
