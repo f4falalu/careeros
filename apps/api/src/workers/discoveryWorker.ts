@@ -9,11 +9,24 @@ import type { NormalizedJob, BoardFilters } from '../agents/lib/boards/index.js'
 import { remotiveAdapter } from '../agents/lib/boards/remotive.js'
 import { remoteOkAdapter } from '../agents/lib/boards/remoteok.js'
 import { weworkRemotelyAdapter } from '../agents/lib/boards/weworkremotely.js'
+import { isCoarselyRelevant } from '../lib/targeting.js'
 
 const ADAPTERS = {
   remotive:        remotiveAdapter,
   remoteok:        remoteOkAdapter,
   weworkremotely:  weworkRemotelyAdapter,
+}
+
+// Derive a board query from a Target's intent. Boards filter what they can natively;
+// the rest is gated on our side via isCoarselyRelevant.
+function buildBoardFilters(target: schema.JobTarget): BoardFilters {
+  const keywords = [...(target.roleTitles ?? []), ...(target.keywords ?? [])].filter(Boolean)
+  const regions = (target.locations ?? []).filter(Boolean)
+  return {
+    keywords: keywords.length ? keywords : undefined,
+    regions: regions.length ? regions : undefined,
+    minSalary: target.minSalary ?? undefined,
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -29,121 +42,136 @@ export async function pollSource(
     return { newJobs: 0, errors: 0 }
   }
 
-  const filters = (source.filters ?? {}) as BoardFilters
-  let jobs: NormalizedJob[]
-  try {
-    jobs = await adapter.fetch(filters)
-  } catch (err) {
-    console.error(`[discovery:${source.board}] fetch error:`, err)
-    // Still update lastPolledAt so we don't hammer on errors
+  // Targets drive ingestion: only pull board jobs relevant to an active Job Target.
+  // No active targets → ingest nothing (the firehose is never stored unfiltered).
+  const targets = await db
+    .select()
+    .from(schema.jobTargets)
+    .where(and(eq(schema.jobTargets.userId, source.userId), eq(schema.jobTargets.status, 'active')))
+
+  if (targets.length === 0) {
     await db
       .update(schema.jobBoardSources)
       .set({ lastPolledAt: new Date() })
       .where(eq(schema.jobBoardSources.id, source.id))
-    return { newJobs: 0, errors: 1 }
+    console.log(`[discovery:${source.board}] no active targets — nothing ingested`)
+    return { newJobs: 0, errors: 0 }
   }
-
-  console.log(`[discovery:${source.board}] fetched ${jobs.length} listings`)
 
   let newJobs = 0
   let errors = 0
 
-  for (const job of jobs) {
+  for (const target of targets) {
+    let jobs: NormalizedJob[]
     try {
-      // Check dedupe ledger
-      const [seen] = await db
-        .select({ id: schema.jobBoardSeen.id })
-        .from(schema.jobBoardSeen)
-        .where(
-          and(
-            eq(schema.jobBoardSeen.userId, source.userId),
-            eq(schema.jobBoardSeen.board, source.board),
-            eq(schema.jobBoardSeen.externalId, job.externalId),
-          ),
-        )
-        .limit(1)
+      jobs = await adapter.fetch(buildBoardFilters(target))
+    } catch (err) {
+      console.error(`[discovery:${source.board}] fetch error for target "${target.label}":`, err)
+      errors++
+      continue
+    }
 
-      if (seen) continue
+    for (const job of jobs) {
+      // Coarse pre-filter: drop jobs that violate this target's locked conditions or
+      // aren't intent-relevant. Fine tiering (incl. capability/adjacent) happens in match.
+      if (!isCoarselyRelevant(target, job)) continue
 
-      // Upsert company
-      let companyId: string | null = null
-      if (job.companyName && job.companyName !== 'Unknown') {
-        const [existingCo] = await db
-          .select({ id: schema.companies.id })
-          .from(schema.companies)
+      try {
+        // Dedupe ledger — a job pulled by multiple targets is ingested once.
+        const [seen] = await db
+          .select({ id: schema.jobBoardSeen.id })
+          .from(schema.jobBoardSeen)
           .where(
             and(
-              eq(schema.companies.userId, source.userId),
-              eq(schema.companies.name, job.companyName),
+              eq(schema.jobBoardSeen.userId, source.userId),
+              eq(schema.jobBoardSeen.board, source.board),
+              eq(schema.jobBoardSeen.externalId, job.externalId),
             ),
           )
           .limit(1)
 
-        if (existingCo) {
-          companyId = existingCo.id
-        } else {
-          const [newCo] = await db
-            .insert(schema.companies)
-            .values({ userId: source.userId, name: job.companyName })
-            .onConflictDoNothing()
-            .returning({ id: schema.companies.id })
-          companyId = newCo?.id ?? null
+        if (seen) continue
+
+        // Upsert company
+        let companyId: string | null = null
+        if (job.companyName && job.companyName !== 'Unknown') {
+          const [existingCo] = await db
+            .select({ id: schema.companies.id })
+            .from(schema.companies)
+            .where(
+              and(
+                eq(schema.companies.userId, source.userId),
+                eq(schema.companies.name, job.companyName),
+              ),
+            )
+            .limit(1)
+
+          if (existingCo) {
+            companyId = existingCo.id
+          } else {
+            const [newCo] = await db
+              .insert(schema.companies)
+              .values({ userId: source.userId, name: job.companyName })
+              .onConflictDoNothing()
+              .returning({ id: schema.companies.id })
+            companyId = newCo?.id ?? null
+          }
         }
-      }
 
-      // Insert opportunity
-      const [opp] = await db
-        .insert(schema.opportunities)
-        .values({
-          userId: source.userId,
-          companyId,
-          roleTitle: job.roleTitle,
-          location: job.location,
-          workModel: job.workModel,
-          salaryText: job.salaryText,
-          requiredSkills: job.requiredSkills,
-          description: job.description,
-          sourceUrl: job.sourceUrl,
-          applyUrl: job.applyUrl,
-          sourceChannel: 'job_board',
-        })
-        .returning()
+        // Insert opportunity
+        const [opp] = await db
+          .insert(schema.opportunities)
+          .values({
+            userId: source.userId,
+            companyId,
+            roleTitle: job.roleTitle,
+            location: job.location,
+            workModel: job.workModel,
+            salaryText: job.salaryText,
+            requiredSkills: job.requiredSkills,
+            description: job.description,
+            sourceUrl: job.sourceUrl,
+            applyUrl: job.applyUrl,
+            sourceChannel: 'job_board',
+          })
+          .returning()
 
-      // Record in dedupe ledger
-      await db
-        .insert(schema.jobBoardSeen)
-        .values({
+        // Record in dedupe ledger
+        await db
+          .insert(schema.jobBoardSeen)
+          .values({
+            userId: source.userId,
+            board: source.board,
+            externalId: job.externalId,
+            opportunityId: opp.id,
+          })
+          .onConflictDoNothing()
+
+        // Enqueue match agent (assigns target links + tiers across all active targets)
+        const [task] = await db
+          .insert(schema.agentTasks)
+          .values({
+            userId: source.userId,
+            agentName: 'match',
+            status: 'queued',
+            sourceChannel: 'job_board',
+            relatedType: 'opportunity',
+            relatedId: opp.id,
+            input: { opportunityId: opp.id },
+          })
+          .returning()
+
+        await enqueueAgent('match', {
+          taskId: task.id,
           userId: source.userId,
-          board: source.board,
-          externalId: job.externalId,
           opportunityId: opp.id,
         })
-        .onConflictDoNothing()
 
-      // Enqueue match agent
-      const [task] = await db
-        .insert(schema.agentTasks)
-        .values({
-          userId: source.userId,
-          agentName: 'match',
-          status: 'queued',
-          sourceChannel: 'job_board',
-          relatedType: 'opportunity',
-          relatedId: opp.id,
-          input: { opportunityId: opp.id },
-        })
-        .returning()
-
-      await enqueueAgent('match', {
-        taskId: task.id,
-        userId: source.userId,
-        opportunityId: opp.id,
-      })
-
-      newJobs++
-    } catch (err) {
-      console.error(`[discovery:${source.board}] insert error for "${job.roleTitle}":`, err)
-      errors++
+        newJobs++
+      } catch (err) {
+        console.error(`[discovery:${source.board}] insert error for "${job.roleTitle}":`, err)
+        errors++
+      }
     }
   }
 

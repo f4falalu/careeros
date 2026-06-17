@@ -8,17 +8,10 @@ const app = new Hono()
 
 const VALID_BOARDS = ['remotive', 'remoteok', 'weworkremotely'] as const
 
-const FiltersSchema = z.object({
-  keywords: z.array(z.string()).optional(),
-  category: z.string().optional(),
-  minSalary: z.number().optional(),
-  regions: z.array(z.string()).optional(),
-})
-
+// Sources are pure on/off channel toggles — search intent lives in Job Targets.
 const SourceBodySchema = z.object({
   board: z.enum(VALID_BOARDS),
   enabled: z.boolean().optional(),
-  filters: FiltersSchema.optional(),
   poll_interval_minutes: z.number().int().min(60).max(1440).optional(),
 })
 
@@ -35,7 +28,6 @@ app.get('/sources', async (c) => {
       id: r.id,
       board: r.board,
       enabled: r.enabled,
-      filters: r.filters,
       poll_interval_minutes: r.pollIntervalMinutes,
       last_polled_at: r.lastPolledAt,
     })),
@@ -70,7 +62,6 @@ app.post('/sources', async (c) => {
       .update(schema.jobBoardSources)
       .set({
         enabled: body.enabled ?? true,
-        filters: (body.filters ?? {}) as Record<string, unknown>,
         pollIntervalMinutes: body.poll_interval_minutes ?? 360,
       })
       .where(eq(schema.jobBoardSources.id, existing.id))
@@ -82,7 +73,6 @@ app.post('/sources', async (c) => {
         userId,
         board: body.board,
         enabled: body.enabled ?? true,
-        filters: (body.filters ?? {}) as Record<string, unknown>,
         pollIntervalMinutes: body.poll_interval_minutes ?? 360,
       })
       .returning()
@@ -92,7 +82,6 @@ app.post('/sources', async (c) => {
     id: row.id,
     board: row.board,
     enabled: row.enabled,
-    filters: row.filters,
     poll_interval_minutes: row.pollIntervalMinutes,
     last_polled_at: row.lastPolledAt,
   }, existing ? 200 : 201)
@@ -101,7 +90,6 @@ app.post('/sources', async (c) => {
 // ── PATCH /job-boards/sources/:id ────────────────────────────
 const PatchBodySchema = z.object({
   enabled: z.boolean().optional(),
-  filters: FiltersSchema.optional(),
   poll_interval_minutes: z.number().int().min(60).max(1440).optional(),
 })
 
@@ -126,7 +114,6 @@ app.patch('/sources/:id', async (c) => {
 
   const updates: Partial<typeof schema.jobBoardSources.$inferInsert> = {}
   if (body.enabled !== undefined) updates.enabled = body.enabled
-  if (body.filters !== undefined) updates.filters = body.filters as Record<string, unknown>
   if (body.poll_interval_minutes !== undefined) updates.pollIntervalMinutes = body.poll_interval_minutes
 
   const [row] = await db
@@ -139,7 +126,6 @@ app.patch('/sources/:id', async (c) => {
     id: row.id,
     board: row.board,
     enabled: row.enabled,
-    filters: row.filters,
     poll_interval_minutes: row.pollIntervalMinutes,
     last_polled_at: row.lastPolledAt,
   })

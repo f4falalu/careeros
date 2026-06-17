@@ -1,0 +1,1 @@
+ALTER TYPE "public"."graph_node_type" ADD VALUE 'agent_activity';

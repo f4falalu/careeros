@@ -37,6 +37,8 @@ const vector = customType<{ data: number[]; driverData: string }>({
 export const graphNodeTypeEnum = pgEnum('graph_node_type', [
   'user', 'skill', 'experience', 'project', 'company', 'opportunity',
   'application', 'recruiter', 'interview', 'goal', 'interest', 'resume', 'vvp', 'message',
+  // Agent runs surfaced as first-class graph events (kind in attributes.kind).
+  'agent_activity',
 ])
 export const conversationChannelEnum = pgEnum('conversation_channel', ['web', 'telegram', 'whatsapp'])
 export const messageRoleEnum = pgEnum('message_role', ['user', 'assistant', 'system'])
@@ -113,6 +115,9 @@ export const credentialKindEnum = pgEnum('credential_kind', [
   'basic',
   'webhook_secret',
 ])
+// Job Targets (intent layer)
+export const targetStatusEnum = pgEnum('target_status', ['active', 'paused'])
+export const fitTierEnum = pgEnum('fit_tier', ['on_target', 'unconfirmed', 'adjacent'])
 
 // ─────────────────────────────────────────────────────────────
 // Identity
@@ -629,7 +634,6 @@ export const jobBoardSources = pgTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     board: text('board').notNull(),
     enabled: boolean('enabled').notNull().default(true),
-    filters: jsonb('filters').notNull().default({}),
     pollIntervalMinutes: integer('poll_interval_minutes').notNull().default(360),
     lastPolledAt: timestamp('last_polled_at', { withTimezone: true }),
   },
@@ -650,6 +654,55 @@ export const jobBoardSeen = pgTable(
     seenAt: timestamp('seen_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('job_board_seen_unique').on(t.userId, t.board, t.externalId)],
+)
+
+// ─────────────────────────────────────────────────────────────
+// Job Targets — the intent layer (named, persistent job searches)
+// ─────────────────────────────────────────────────────────────
+export const jobTargets = pgTable(
+  'job_targets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    label: text('label').notNull(),
+    roleTitles: text('role_titles').array().default([]),
+    keywords: text('keywords').array().default([]),
+    seniority: text('seniority').array().default([]),
+    locations: text('locations').array().default([]),
+    workModels: workModelEnum('work_models').array().default([]),
+    minSalary: integer('min_salary'),
+    // Which conditions are strict gates, keyed by condition name → boolean.
+    // e.g. { "location": true, "work_model": true, "seniority": false, "min_salary": false }
+    locks: jsonb('locks').notNull().default({}),
+    status: targetStatusEnum('status').notNull().default('active'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('job_targets_user').on(t.userId)],
+)
+
+// Many-to-many link between an opportunity and the Target(s) it matches.
+export const opportunityTargets = pgTable(
+  'opportunity_targets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    opportunityId: uuid('opportunity_id')
+      .notNull()
+      .references(() => opportunities.id, { onDelete: 'cascade' }),
+    targetId: uuid('target_id')
+      .notNull()
+      .references(() => jobTargets.id, { onDelete: 'cascade' }),
+    fitTier: fitTierEnum('fit_tier').notNull(),
+    // JD-requirements ↔ user-capability fit (0–100); null when not computable.
+    capabilityScore: numeric('capability_score', { precision: 4, scale: 1 }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('opportunity_targets_unique').on(t.opportunityId, t.targetId),
+    index('opportunity_targets_target').on(t.targetId),
+  ],
 )
 
 // ─────────────────────────────────────────────────────────────
@@ -934,6 +987,12 @@ export type NewJobBoardSource = typeof jobBoardSources.$inferInsert
 
 export type JobBoardSeen = typeof jobBoardSeen.$inferSelect
 export type NewJobBoardSeen = typeof jobBoardSeen.$inferInsert
+
+export type JobTarget = typeof jobTargets.$inferSelect
+export type NewJobTarget = typeof jobTargets.$inferInsert
+
+export type OpportunityTarget = typeof opportunityTargets.$inferSelect
+export type NewOpportunityTarget = typeof opportunityTargets.$inferInsert
 
 export type ChannelLinkToken = typeof channelLinkTokens.$inferSelect
 export type NewChannelLinkToken = typeof channelLinkTokens.$inferInsert

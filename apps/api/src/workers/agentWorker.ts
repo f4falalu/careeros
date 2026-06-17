@@ -64,6 +64,84 @@ async function updateTask(
   }
 }
 
+// ── Agent-activity graph events ─────────────────────────────────────────────────
+
+// Maps a succeeded job to a first-class graph event. Jobs not listed here
+// (e.g. tracker, followup, intake) don't produce an activity node.
+const ACTIVITY_MAP: Record<string, { kind: string; label: string }> = {
+  resume: { kind: 'resume_tailored', label: 'Resume tailored' },
+  match: { kind: 'match', label: 'Match analysis' },
+  outreach: { kind: 'outreach', label: 'Outreach drafted' },
+  research: { kind: 'research', label: 'Company research' },
+  interview_brief: { kind: 'interview_brief', label: 'Interview brief' },
+  vvp_generate: { kind: 'vvp_created', label: 'Value plan' },
+}
+
+/**
+ * Writes a successful agent run into the career graph as an `agent_activity`
+ * event node, linked to the opportunity/company it concerned. Best-effort —
+ * a graph write failure must never fail the agent task.
+ */
+async function recordAgentActivity(
+  jobName: string,
+  jobData: Record<string, unknown>,
+): Promise<void> {
+  const spec = ACTIVITY_MAP[jobName]
+  if (!spec) return
+  const userId = jobData.userId as string
+
+  let opportunityId = (jobData.opportunityId as string | undefined) ?? null
+  const companyId = (jobData.companyId as string | undefined) ?? null
+  let companyLabel: string | null = null
+
+  // Resolve the opportunity for jobs that reference it indirectly.
+  if (!opportunityId && typeof jobData.applicationId === 'string') {
+    const [appRow] = await db
+      .select({ opportunityId: schema.applications.opportunityId })
+      .from(schema.applications)
+      .where(eq(schema.applications.id, jobData.applicationId))
+      .limit(1)
+    opportunityId = appRow?.opportunityId ?? null
+  }
+  if (!opportunityId && typeof jobData.vvpId === 'string') {
+    const [vvpRow] = await db
+      .select({ opportunityId: schema.vvps.opportunityId })
+      .from(schema.vvps)
+      .where(eq(schema.vvps.id, jobData.vvpId))
+      .limit(1)
+    opportunityId = vvpRow?.opportunityId ?? null
+  }
+
+  // Build a label that names the target.
+  let label = spec.label
+  if (opportunityId) {
+    const [opp] = await db
+      .select({ roleTitle: schema.opportunities.roleTitle })
+      .from(schema.opportunities)
+      .where(eq(schema.opportunities.id, opportunityId))
+      .limit(1)
+    if (opp) label = `${spec.label} · ${opp.roleTitle}`
+  } else if (companyId) {
+    const [co] = await db
+      .select({ name: schema.companies.name })
+      .from(schema.companies)
+      .where(eq(schema.companies.id, companyId))
+      .limit(1)
+    if (co) {
+      companyLabel = co.name
+      label = `${spec.label} · ${co.name}`
+    }
+  }
+
+  await graphService.recordActivity(userId, {
+    kind: spec.kind,
+    label,
+    opportunityId,
+    companyId,
+    companyLabel,
+  })
+}
+
 // ── Worker factory ────────────────────────────────────────────────────────────
 
 /**
@@ -302,6 +380,11 @@ export function startAgentWorker() {
           toolsUsed: (result.toolsUsed as string[]) ?? [],
           finishedAt: new Date(),
         })
+
+        // Surface the run as a graph event (non-blocking).
+        await recordAgentActivity(job.name, jobData).catch((e) =>
+          console.error('[worker] recordAgentActivity error (non-blocking):', String(e)),
+        )
 
         const successMsg = buildTaskNotification(job.name, 'succeeded', result)
         if (successMsg) notifyUser(userId, successMsg).catch((e) => console.error('[worker] notify error:', e))

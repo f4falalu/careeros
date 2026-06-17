@@ -84,6 +84,23 @@ app.get('/graph/paths', async (c) => {
   return c.json({ path })
 })
 
+// GET /graph/predictions — predicted next career directions (from graph themes/strengths)
+app.get('/graph/predictions', async (c) => {
+  const userId = c.get('userId')
+  const moves = await graphService.recommendCareerMoves(userId)
+  return c.json(moves)
+})
+
+// POST /graph/ask — graph-grounded NL question → answer + node ids to highlight
+app.post('/graph/ask', async (c) => {
+  const userId = c.get('userId')
+  const body = await c.req.json().catch(() => ({})) as { question?: string }
+  const question = typeof body.question === 'string' ? body.question.trim() : ''
+  if (!question) return c.json({ error: 'question is required' }, 400)
+  const result = await graphService.askGraph(userId, question)
+  return c.json(result)
+})
+
 // POST /graph/enrich — upsert nodes and edges into the user's graph
 app.post('/graph/enrich', async (c) => {
   const userId = c.get('userId')

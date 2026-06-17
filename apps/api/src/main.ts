@@ -26,6 +26,7 @@ import { startWhatsappBot } from './channels/whatsapp.js'
 import { startAgentWorker } from './workers/agentWorker.js'
 import { startDiscoveryWorker } from './workers/discoveryWorker.js'
 import { jobBoardsRoutes } from './routes/jobBoards.js'
+import { jobTargetsRoutes } from './routes/jobTargets.js'
 import { interviewsRoutes } from './routes/interviews.js'
 import { followupsRoutes } from './routes/followups.js'
 import { strategistRoutes } from './routes/strategist.js'
@@ -122,6 +123,7 @@ app.use('/outreach/*', authMiddleware)
 app.use('/vvps/*', authMiddleware)
 app.use('/contacts/*', authMiddleware)
 app.use('/job-boards/*', authMiddleware)
+app.use('/job-targets/*', authMiddleware)
 app.use('/interviews/*', authMiddleware)
 app.use('/followups/*', authMiddleware)
 app.use('/strategist/*', authMiddleware)
@@ -145,6 +147,7 @@ app.route('/settings', settingsRoutes)
 app.route('/outreach', outreachRoutes)
 app.route('/contacts', contactsRoutes)
 app.route('/job-boards', jobBoardsRoutes)
+app.route('/job-targets', jobTargetsRoutes)
 // VVP routes: /vvps/* and /opportunities/:id/vvp/* are co-mounted at root
 app.route('/', vvpRoutes)
 // Phase 3 routes: interviews at /, followups at /outreach (extension), strategist at /strategist

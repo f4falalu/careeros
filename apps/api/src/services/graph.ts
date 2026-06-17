@@ -13,6 +13,9 @@ export interface SubgraphNode {
   entityId: string | null
   label: string
   metadata: Record<string, unknown>
+  // When the node entered the graph. Used as the fallback date for Timeline mode
+  // (career dates in `metadata.startDate/endDate/occurredAt` take precedence).
+  createdAt: string
 }
 
 export interface SubgraphEdge {
@@ -77,6 +80,14 @@ export interface CareerMove {
   rationale: string
   supportingThemes: string[]
   confidence: number
+}
+
+export interface GraphAskResult {
+  intent: 'weakness' | 'strength_path' | 'evidence' | 'search' | 'empty'
+  answer: string
+  highlightNodeIds: string[]
+  path: string[]
+  focusNodeId: string | null
 }
 
 export interface NodeUpsert {
@@ -726,6 +737,112 @@ Return ONLY a JSON array of short theme labels (max 5 words each). Example: ["Pr
     }
   }
 
+  // ── recordActivity ────────────────────────────────────────────
+
+  /**
+   * Records a completed agent run as a first-class graph event node
+   * (`agent_activity`, distinguished by `attributes.kind`). Links it to the user
+   * (PRODUCED) and, when the entity is already a node, to the opportunity (FOR) or
+   * company (ABOUT) it concerned. Best-effort: callers wrap this in try/catch so a
+   * graph write can never fail the underlying agent task.
+   */
+  async recordActivity(
+    userId: string,
+    activity: {
+      kind: string
+      label: string
+      occurredAt?: Date
+      attributes?: Record<string, unknown>
+      opportunityId?: string | null
+      companyId?: string | null
+      companyLabel?: string | null
+    },
+  ): Promise<void> {
+    // Resolve the user's anchor node directly (avoids the upsert path creating a duplicate).
+    const [userNode] = await this.db
+      .select({ id: schema.graphNodes.id })
+      .from(schema.graphNodes)
+      .where(and(eq(schema.graphNodes.userId, userId), eq(schema.graphNodes.type, 'user')))
+      .limit(1)
+    if (!userNode) return
+
+    const occurredAt = activity.occurredAt ?? new Date()
+    const [node] = await this.db
+      .insert(schema.graphNodes)
+      .values({
+        userId,
+        type: 'agent_activity',
+        entityId: null,
+        label: activity.label,
+        attributes: {
+          kind: activity.kind,
+          occurredAt: occurredAt.toISOString(),
+          ...(activity.attributes ?? {}),
+        },
+      })
+      .returning({ id: schema.graphNodes.id })
+
+    await this.db.insert(schema.graphEdges).values({
+      userId,
+      fromNodeId: userNode.id,
+      toNodeId: node.id,
+      relationship: 'PRODUCED',
+      evidence: [{ source: 'agent_worker', kind: activity.kind }],
+      confidence: '1.000',
+    })
+
+    // Link the activity to the entity it concerned, when that entity is already a node.
+    if (activity.opportunityId) {
+      const [opp] = await this.db
+        .select({ id: schema.graphNodes.id })
+        .from(schema.graphNodes)
+        .where(
+          and(
+            eq(schema.graphNodes.userId, userId),
+            eq(schema.graphNodes.type, 'opportunity'),
+            eq(schema.graphNodes.entityId, activity.opportunityId),
+          ),
+        )
+        .limit(1)
+      if (opp) {
+        await this.db.insert(schema.graphEdges).values({
+          userId,
+          fromNodeId: node.id,
+          toNodeId: opp.id,
+          relationship: 'FOR',
+          evidence: [{ source: 'agent_worker', kind: activity.kind }],
+          confidence: '1.000',
+        })
+      }
+    } else if (activity.companyId || activity.companyLabel) {
+      // Company nodes are seeded by label (no entityId), so match either.
+      const [company] = await this.db
+        .select({ id: schema.graphNodes.id })
+        .from(schema.graphNodes)
+        .where(
+          and(
+            eq(schema.graphNodes.userId, userId),
+            eq(schema.graphNodes.type, 'company'),
+            or(
+              activity.companyId ? eq(schema.graphNodes.entityId, activity.companyId) : sql`false`,
+              activity.companyLabel ? eq(schema.graphNodes.label, activity.companyLabel) : sql`false`,
+            ),
+          ),
+        )
+        .limit(1)
+      if (company) {
+        await this.db.insert(schema.graphEdges).values({
+          userId,
+          fromNodeId: node.id,
+          toNodeId: company.id,
+          relationship: 'ABOUT',
+          evidence: [{ source: 'agent_worker', kind: activity.kind }],
+          confidence: '1.000',
+        })
+      }
+    }
+  }
+
   // ── getSubgraph ───────────────────────────────────────────────
 
   async getSubgraph(userId: string, rootNodeId: string | null, depth: number): Promise<SubgraphResult> {
@@ -764,6 +881,7 @@ Return ONLY a JSON array of short theme labels (max 5 words each). Example: ["Pr
       entityId: rootRow.entityId ?? null,
       label: rootRow.label,
       metadata: (rootRow.attributes ?? {}) as Record<string, unknown>,
+      createdAt: rootRow.createdAt.toISOString(),
     })
 
     for (let d = 0; d < depth && frontier.length > 0; d++) {
@@ -820,6 +938,7 @@ Return ONLY a JSON array of short theme labels (max 5 words each). Example: ["Pr
             entityId: n.entityId ?? null,
             label: n.label,
             metadata: (n.attributes ?? {}) as Record<string, unknown>,
+            createdAt: n.createdAt.toISOString(),
           })
         }
       }
@@ -882,6 +1001,7 @@ Return ONLY a JSON array of short theme labels (max 5 words each). Example: ["Pr
         entityId: nodeRow.entityId ?? null,
         label: nodeRow.label,
         metadata: (nodeRow.attributes ?? {}) as Record<string, unknown>,
+        createdAt: nodeRow.createdAt.toISOString(),
       },
       edges: subgraphEdges,
       inferences: inferences.map((i) => ({
@@ -935,6 +1055,137 @@ Return ONLY a JSON array of short theme labels (max 5 words each). Example: ["Pr
     }
 
     return []
+  }
+
+  // ── askGraph ──────────────────────────────────────────────────
+  // Graph-grounded natural-language answer. Deterministic intent routing over
+  // existing primitives (inferences, opportunity ranking, shortest path) — every
+  // answer is traceable to nodes in the user's graph (no fabrication).
+  async askGraph(userId: string, question: string): Promise<GraphAskResult> {
+    const q = question.toLowerCase().trim()
+
+    const nodes = await this.db
+      .select({
+        id: schema.graphNodes.id,
+        type: schema.graphNodes.type,
+        entityId: schema.graphNodes.entityId,
+        label: schema.graphNodes.label,
+      })
+      .from(schema.graphNodes)
+      .where(eq(schema.graphNodes.userId, userId))
+      .limit(500)
+
+    if (nodes.length === 0) {
+      return {
+        intent: 'empty',
+        answer: 'Your career graph is empty. Complete your profile to start seeing connections.',
+        highlightNodeIds: [], path: [], focusNodeId: null,
+      }
+    }
+
+    const userNode = nodes.find((n) => n.type === 'user')
+    const byLabel = (label: string) =>
+      nodes.filter((n) => n.label.toLowerCase() === label.toLowerCase())
+
+    // ── Intent: weakness / what's holding me back ──
+    if (/weak|gap|holding me back|improv|lack|missing|struggl|behind/.test(q)) {
+      const grouped = await this.getInferences(userId)
+      const weaknesses = grouped['weakness'] ?? []
+      const ids = weaknesses.flatMap((w) => byLabel(w.label).map((n) => n.id))
+      const labels = weaknesses.map((w) => w.label)
+      return {
+        intent: 'weakness',
+        answer: weaknesses.length
+          ? `Your graph flags ${weaknesses.length} capability gap${weaknesses.length > 1 ? 's' : ''}: ${labels.slice(0, 6).join(', ')}. These are skills required by roles you're targeting but not yet evidenced in your profile.`
+          : `No clear gaps detected yet — add target roles so CareerOS can compare their required skills against your evidence.`,
+        highlightNodeIds: ids,
+        path: [],
+        focusNodeId: ids[0] ?? null,
+      }
+    }
+
+    // ── Intent: why am I a strong candidate / good fit (path to opportunity) ──
+    if (userNode && /strong|good fit|why am i|qualif|candidate|\bfit\b|match/.test(q)) {
+      let oppNode = nodes.find(
+        (n) => n.type === 'opportunity' && n.label.length > 2 && q.includes(n.label.toLowerCase()),
+      )
+      if (!oppNode) {
+        const recs = await this.recommendOpportunities(userId)
+        if (recs.length > 0) {
+          const top = recs[0]
+          oppNode =
+            nodes.find((n) => n.entityId === top.opportunityId) ??
+            nodes.find(
+              (n) => n.type === 'opportunity' && n.label.toLowerCase().includes(top.roleTitle.toLowerCase()),
+            )
+        }
+      }
+      if (oppNode) {
+        const path = await this.findPath(userId, userNode.id, oppNode.id)
+        if (path.length > 1) {
+          const labels = new Map(nodes.map((n) => [n.id, n.label]))
+          const chain = path.map((id) => labels.get(id) ?? '').filter(Boolean)
+          return {
+            intent: 'strength_path',
+            answer: `You're a strong match for ${oppNode.label} — your graph connects you through: ${chain.join(' → ')}.`,
+            highlightNodeIds: path,
+            path,
+            focusNodeId: oppNode.id,
+          }
+        }
+      }
+      const grouped = await this.getInferences(userId)
+      const strengths = (grouped['strength'] ?? []).slice(0, 6)
+      const ids = strengths.flatMap((s) => byLabel(s.label).map((n) => n.id))
+      return {
+        intent: 'strength_path',
+        answer: strengths.length
+          ? `Your strongest evidenced areas are: ${strengths.map((s) => s.label).join(', ')}.`
+          : `Not enough signal yet to assess your strengths — add projects and experience to your profile.`,
+        highlightNodeIds: ids,
+        path: [],
+        focusNodeId: ids[0] ?? null,
+      }
+    }
+
+    // ── Intent: evidence / show me / direct concept match ──
+    const matched = nodes.filter((n) => n.label.length > 2 && q.includes(n.label.toLowerCase()))
+    if (matched.length > 0) {
+      const ids = matched.map((n) => n.id)
+      return {
+        intent: 'evidence',
+        answer: `Found ${matched.length} node${matched.length > 1 ? 's' : ''} matching your question: ${matched.slice(0, 6).map((n) => n.label).join(', ')}. Highlighted in the graph — click any node to inspect its evidence.`,
+        highlightNodeIds: ids,
+        path: [],
+        focusNodeId: ids[0],
+      }
+    }
+
+    // ── Fallback: token-overlap search ──
+    const tokens = q.split(/\W+/).filter((t) => t.length > 3)
+    const scored = nodes
+      .map((n) => ({ n, score: tokens.filter((t) => n.label.toLowerCase().includes(t)).length }))
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 8)
+    if (scored.length > 0) {
+      const ids = scored.map((x) => x.n.id)
+      return {
+        intent: 'search',
+        answer: `Closest matches in your graph: ${scored.slice(0, 6).map((x) => x.n.label).join(', ')}.`,
+        highlightNodeIds: ids,
+        path: [],
+        focusNodeId: ids[0],
+      }
+    }
+
+    return {
+      intent: 'search',
+      answer: `I couldn't find anything in your graph for that. Try a specific skill or role, or ask "what's holding me back?"`,
+      highlightNodeIds: [],
+      path: [],
+      focusNodeId: null,
+    }
   }
 
   // ── private helpers ───────────────────────────────────────────

@@ -5,7 +5,8 @@
 
 import { z } from 'zod'
 import { db, schema } from '../db/index.js'
-import { eq } from 'drizzle-orm'
+import { eq, and, inArray } from 'drizzle-orm'
+import { evaluateTarget } from '../lib/targeting.js'
 import { generateStructured, embed } from '../router/modelRouter.js'
 import { markRunning, markSucceeded, markFailed } from './lib/task.js'
 import { qdrantUpsert } from '../lib/qdrant.js'
@@ -127,6 +128,47 @@ Return a JSON object with:
     missingSkills: missing,
     rationale: rationale.slice(0, 500),
   })
+
+  // 4b. Link this opportunity to the user's active Job Targets (intent layer).
+  // Capability = JD-requirements ↔ user-skill overlap (null when the JD lists no skills).
+  // Tiering & hard-gating (locked conditions) live in lib/targeting.ts. Re-running match
+  // re-links the *active* targets from scratch so edits to targets/skills are reflected —
+  // links to paused targets are left untouched (pausing must preserve existing links).
+  try {
+    const capabilityScore = requiredSkills.length > 0 ? Math.round(overlapScore) : null
+    const activeTargets = await db
+      .select()
+      .from(schema.jobTargets)
+      .where(and(eq(schema.jobTargets.userId, input.userId), eq(schema.jobTargets.status, 'active')))
+
+    const activeTargetIds = activeTargets.map((t) => t.id)
+    if (activeTargetIds.length > 0) {
+      await db
+        .delete(schema.opportunityTargets)
+        .where(
+          and(
+            eq(schema.opportunityTargets.opportunityId, input.opportunityId),
+            inArray(schema.opportunityTargets.targetId, activeTargetIds),
+          ),
+        )
+    }
+
+    for (const target of activeTargets) {
+      const result = evaluateTarget(target, opportunity, capabilityScore)
+      if (!result) continue
+      await db
+        .insert(schema.opportunityTargets)
+        .values({
+          opportunityId: input.opportunityId,
+          targetId: target.id,
+          fitTier: result.tier,
+          capabilityScore: capabilityScore != null ? String(capabilityScore) : null,
+        })
+        .onConflictDoNothing()
+    }
+  } catch (err) {
+    console.error('[match] target linking error (non-blocking):', String(err))
+  }
 
   const output = { score, matchedSkills: matched, missingSkills: missing, rationale, strengths, gaps, recommendation }
 

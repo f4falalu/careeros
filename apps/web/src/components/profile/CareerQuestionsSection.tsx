@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check, Sparkles, Loader2, X } from 'lucide-react'
 import { api } from '@/lib/api'
@@ -45,6 +45,15 @@ export function CareerQuestionsSection({ profile }: Props) {
   const [dirty, setDirty] = useState(false)
   const [suggestions, setSuggestions] = useState<Record<string, string> | null>(null)
   const [rationale, setRationale] = useState('')
+
+  // The profile is fetched asynchronously, so it's null on first mount and the
+  // useState initializer above seeds answers to {}. Re-hydrate once it loads,
+  // but never clobber unsaved edits in progress.
+  useEffect(() => {
+    if (!dirty && profile?.career_questions) {
+      setAnswers(profile.career_questions as Record<string, string>)
+    }
+  }, [profile, dirty])
 
   const save = useMutation({
     mutationFn: () =>

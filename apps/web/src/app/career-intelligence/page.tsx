@@ -1,12 +1,17 @@
 'use client'
 import { useState, useCallback, useEffect, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
-import { ReactFlowProvider } from 'reactflow'
+import dynamic from 'next/dynamic'
 import { useQuery } from '@tanstack/react-query'
 import { Map, Zap, FileText, Lightbulb, GitBranch } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { api } from '@/lib/api'
-import { KGExplorer } from '@/components/kg/KGExplorer'
+
+// Sigma touches WebGL at import time — load client-only to avoid SSR crash.
+const SigmaExplorer = dynamic(
+  () => import('@/components/kg/SigmaExplorer').then((m) => m.SigmaExplorer),
+  { ssr: false },
+)
 import { SkillsTab } from '@/components/kg/tabs/SkillsTab'
 import { EvidenceTab } from '@/components/kg/tabs/EvidenceTab'
 import { InsightsTab } from '@/components/kg/tabs/InsightsTab'
@@ -104,13 +109,11 @@ function CareerIntelligenceContent() {
       <div className="flex-1 min-h-0 overflow-hidden">
         {/* Career Map tab — full height React Flow canvas */}
         <div className={cn('h-full', activeTab !== 'map' && 'hidden')}>
-          <ReactFlowProvider>
-            <KGExplorer
-              initialPathTo={resolvedPathTo}
-              jumpToNodeId={jumpToNodeId}
-              initialSearch={initialSearch}
-            />
-          </ReactFlowProvider>
+          <SigmaExplorer
+            initialPathTo={resolvedPathTo}
+            jumpToNodeId={jumpToNodeId}
+            initialSearch={initialSearch}
+          />
         </div>
 
         {/* Scrollable tabs */}

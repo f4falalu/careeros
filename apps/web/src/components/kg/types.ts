@@ -37,6 +37,7 @@ export const NODE_TYPE_STYLES: Record<string, { color: string; bg: string; size:
   opportunity:{ color: '#f59e0b', bg: '#fffbeb', size: 'md' },
   goal:       { color: '#eab308', bg: '#fefce8', size: 'sm' },
   inference:  { color: '#06b6d4', bg: '#ecfeff', size: 'sm' },
+  agent_activity: { color: '#14b8a6', bg: '#f0fdfa', size: 'sm' },
 }
 
 export const NODE_WIDTHS = { lg: 140, md: 120, sm: 100 }
@@ -55,6 +56,7 @@ export function getEntityPath(nodeType: string, nodeId: string): string | null {
     resume:      `/resume`,
     vvp:         `/vvp/${nodeId}`,
     interview:   `/interviews`,
+    agent_activity: `/tasks`,
   }
   return map[nodeType] ?? null
 }

@@ -308,6 +308,9 @@ export const api = {
       req<Record<string, KGInference[]>>('/graph/infer', { method: 'POST' }),
     enrich: (data: unknown) =>
       req<void>('/graph/enrich', { method: 'POST', body: JSON.stringify(data) }),
+    ask: (question: string) =>
+      req<GraphAskResult>('/graph/ask', { method: 'POST', body: JSON.stringify({ question }) }),
+    predictions: () => req<CareerMove[]>('/graph/predictions'),
   },
 
   strategist: {
@@ -397,6 +400,8 @@ export interface KGNode {
   entityId?: string | null
   label: string
   metadata: Record<string, unknown>
+  // ISO timestamp the node entered the graph (Timeline mode date fallback).
+  createdAt?: string
 }
 
 export interface KGEdge {
@@ -416,4 +421,17 @@ export interface KGInference {
   evidence: unknown
   computedAt?: string
   expiresAt?: string | null
+}
+export interface GraphAskResult {
+  intent: 'weakness' | 'strength_path' | 'evidence' | 'search' | 'empty'
+  answer: string
+  highlightNodeIds: string[]
+  path: string[]
+  focusNodeId: string | null
+}
+export interface CareerMove {
+  roleType: string
+  rationale: string
+  supportingThemes: string[]
+  confidence: number
 }
