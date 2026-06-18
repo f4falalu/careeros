@@ -102,7 +102,7 @@ export function Header() {
             className="flex items-center gap-1.5 h-8 px-3 rounded-md bg-[var(--color-text)] text-[var(--color-surface)] text-[12.5px] font-medium hover:opacity-90 transition-opacity"
           >
             <Plus size={13} />
-            Add Job
+            Add Job URL
           </button>
         )}
 

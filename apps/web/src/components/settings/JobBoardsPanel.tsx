@@ -1,10 +1,11 @@
 'use client'
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, Trash2, Plus, Loader2, Check } from 'lucide-react'
+import { RefreshCw, Trash2, Plus, Loader2, Check, Pencil, Target as TargetIcon } from 'lucide-react'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import type { BoardName, JobBoardSource } from '@/types'
+import { TargetEditorModal } from '@/components/jobs/TargetEditorModal'
+import type { BoardName, JobBoardSource, JobTarget } from '@/types'
 
 const BOARDS: { id: BoardName; label: string; description: string }[] = [
   { id: 'remotive',       label: 'Remotive',        description: 'JSON API · remote jobs · no auth required' },
@@ -61,11 +62,6 @@ function BoardCard({ source, onPoll }: { source: JobBoardSource; onPoll: () => v
             Last polled: {new Date(source.last_polled_at).toLocaleString()}
           </p>
         )}
-        {source.filters?.keywords?.length ? (
-          <p className="text-[11px] text-[var(--color-muted)] mt-1">
-            Keywords: {source.filters.keywords.join(', ')}
-          </p>
-        ) : null}
       </div>
       <div className="flex items-center gap-1.5 shrink-0">
         <button
@@ -106,7 +102,6 @@ function BoardCard({ source, onPoll }: { source: JobBoardSource; onPoll: () => v
 function AddBoardForm({ existing, onDone }: { existing: string[]; onDone: () => void }) {
   const qc = useQueryClient()
   const [board, setBoard] = useState<BoardName>('remotive')
-  const [keywords, setKeywords] = useState('')
   const [interval, setInterval] = useState(360)
 
   const add = useMutation({
@@ -114,9 +109,6 @@ function AddBoardForm({ existing, onDone }: { existing: string[]; onDone: () => 
       api.jobBoards.upsert({
         board,
         enabled: true,
-        filters: {
-          keywords: keywords.split(',').map((k) => k.trim()).filter(Boolean),
-        },
         poll_interval_minutes: interval,
       }),
     onSuccess: () => {
@@ -156,16 +148,6 @@ function AddBoardForm({ existing, onDone }: { existing: string[]; onDone: () => 
           />
         </div>
       </div>
-      <div>
-        <label className="text-[11px] text-[var(--color-muted)] mb-1 block">Keywords (comma-separated, optional)</label>
-        <input
-          type="text"
-          placeholder="e.g. TypeScript, Node.js, Senior"
-          value={keywords}
-          onChange={(e) => setKeywords(e.target.value)}
-          className="w-full text-[12px] bg-[var(--color-surface-sunken)] border border-[var(--color-border)] rounded px-2 py-1.5 text-[var(--color-text)] placeholder:text-[var(--color-faint)]"
-        />
-      </div>
       <div className="flex gap-2">
         <button
           onClick={() => add.mutate()}
@@ -186,6 +168,100 @@ function AddBoardForm({ existing, onDone }: { existing: string[]; onDone: () => 
   )
 }
 
+function targetSummary(t: JobTarget): string {
+  const parts: string[] = []
+  if (t.work_models.length) parts.push(t.work_models.join('/'))
+  if (t.seniority.length) parts.push(t.seniority.join('/'))
+  if (t.locations.length) parts.push(t.locations.join(', '))
+  if (t.min_salary != null) parts.push(`≥ ${t.min_salary}`)
+  return parts.join(' · ') || 'no conditions'
+}
+
+function TargetsManager() {
+  const qc = useQueryClient()
+  const [modal, setModal] = useState<{ open: boolean; target: JobTarget | null }>({ open: false, target: null })
+
+  const { data: targets = [], isLoading } = useQuery({
+    queryKey: ['job-targets'],
+    queryFn: () => api.jobTargets.list(),
+    staleTime: 30_000,
+  })
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ['job-targets'] })
+    qc.invalidateQueries({ queryKey: ['job-targets-recommendations'] })
+  }
+  const toggle = useMutation({
+    mutationFn: (t: JobTarget) => api.jobTargets.update(t.id, { status: t.status === 'active' ? 'paused' : 'active' }),
+    onSuccess: invalidate,
+  })
+  const remove = useMutation({
+    mutationFn: (id: string) => api.jobTargets.delete(id),
+    onSuccess: invalidate,
+  })
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-[14px] font-semibold text-[var(--color-text)]">Search Targets</h3>
+          <p className="text-[12px] text-[var(--color-muted)] mt-0.5">
+            Named searches that decide which jobs get pulled in and how they’re ranked. Without an active target, nothing is ingested.
+          </p>
+        </div>
+        <button
+          onClick={() => setModal({ open: true, target: null })}
+          className="flex items-center gap-1.5 h-7 px-3 rounded-sm text-[12px] font-medium bg-[var(--color-surface-sunken)] text-[var(--color-text)] hover:bg-[var(--color-border)] transition-colors"
+        >
+          <Plus size={12} strokeWidth={1.5} />New target
+        </button>
+      </div>
+
+      {isLoading ? (
+        <div className="h-16 rounded-md bg-[var(--color-surface)] border border-[var(--color-border)] animate-pulse" />
+      ) : targets.length === 0 ? (
+        <div className="p-6 rounded-md border border-dashed border-[var(--color-border)] text-center">
+          <p className="text-[13px] text-[var(--color-muted)]">No targets yet.</p>
+          <button onClick={() => setModal({ open: true, target: null })} className="mt-2 text-[12px] font-medium text-[var(--color-text)] underline underline-offset-2">
+            Create your first target
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-2.5">
+          {targets.map((t) => (
+            <div key={t.id} className="flex items-start justify-between gap-4 p-3.5 rounded-md bg-[var(--color-surface)] border border-[var(--color-border)]">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <TargetIcon size={13} className="text-[var(--color-muted)]" />
+                  <p className="text-[13px] font-semibold text-[var(--color-text)]">{t.label}</p>
+                  <span className={cn('text-[10px] font-medium px-1.5 py-0.5 rounded-full',
+                    t.status === 'active' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-[var(--color-bg)] text-[var(--color-muted)] border border-[var(--color-border)]')}>
+                    {t.status === 'active' ? 'Active' : 'Paused'}
+                  </span>
+                  <span className="text-[11px] text-[var(--color-faint)]">{t.opportunity_count ?? 0} matched</span>
+                </div>
+                <p className="text-[11px] text-[var(--color-muted)]">
+                  {(t.role_titles.length ? t.role_titles.join(', ') : t.keywords.join(', ')) || '—'}
+                </p>
+                <p className="text-[11px] text-[var(--color-faint)] mt-0.5">{targetSummary(t)}</p>
+              </div>
+              <div className="flex items-center gap-0.5 shrink-0">
+                <button onClick={() => setModal({ open: true, target: t })} title="Edit" className="h-7 w-7 flex items-center justify-center rounded-sm text-[var(--color-faint)] hover:text-[var(--color-text)] hover:bg-[var(--color-bg)] transition-colors"><Pencil size={13} strokeWidth={1.5} /></button>
+                <button onClick={() => toggle.mutate(t)} disabled={toggle.isPending} className="h-7 px-2 rounded-sm text-[11px] font-medium text-[var(--color-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-bg)] transition-colors disabled:opacity-40">
+                  {t.status === 'active' ? 'Pause' : 'Resume'}
+                </button>
+                <button onClick={() => { if (confirm(`Delete target "${t.label}"?`)) remove.mutate(t.id) }} disabled={remove.isPending} title="Delete" className="h-7 w-7 flex items-center justify-center rounded-sm text-[var(--color-faint)] hover:text-danger hover:bg-danger/10 transition-colors disabled:opacity-40"><Trash2 size={13} strokeWidth={1.5} /></button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {modal.open && <TargetEditorModal target={modal.target} onClose={() => setModal({ open: false, target: null })} />}
+    </div>
+  )
+}
+
 export function JobBoardsPanel() {
   const qc = useQueryClient()
   const [showAdd, setShowAdd] = useState(false)
@@ -200,12 +276,15 @@ export function JobBoardsPanel() {
   const canAddMore = existingBoards.length < BOARDS.length
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-8">
+      <TargetsManager />
+
+      <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-[14px] font-semibold text-[var(--color-text)]">Job Boards</h3>
           <p className="text-[12px] text-[var(--color-muted)] mt-0.5">
-            Official feeds only — no scraping. Discovered jobs are scored by Match and surface in the Discovered feed.
+            Official feeds only — no scraping. Channels to pull from; your Search Targets decide what’s kept.
           </p>
         </div>
         {canAddMore && !showAdd && (
@@ -253,6 +332,7 @@ export function JobBoardsPanel() {
           onDone={() => setShowAdd(false)}
         />
       )}
+      </div>
     </div>
   )
 }

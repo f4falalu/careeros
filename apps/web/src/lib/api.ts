@@ -12,6 +12,10 @@ import type {
   FollowUp,
   Interview,
   JobBoardSource,
+  JobTarget,
+  JobTargetDetail,
+  JobTargetRecommendations,
+  CreateJobTargetInput,
   MessageState,
   MockSession,
   Opportunity,
@@ -261,6 +265,17 @@ export const api = {
     // Phase 4 (gated): scrape a careers page. Subject to Settings → Autonomy.
     scrape: (url: string) =>
       req<AgentTask>('/job-boards/scrape', { method: 'POST', body: JSON.stringify({ url }) }),
+  },
+
+  jobTargets: {
+    list: () => req<JobTarget[]>('/job-targets'),
+    recommendations: () => req<JobTargetRecommendations>('/job-targets/recommendations'),
+    get: (id: string) => req<JobTargetDetail>(`/job-targets/${id}`),
+    create: (data: CreateJobTargetInput) =>
+      req<JobTarget>('/job-targets', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: string, data: Partial<CreateJobTargetInput>) =>
+      req<JobTarget>(`/job-targets/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    delete: (id: string) => req<void>(`/job-targets/${id}`, { method: 'DELETE' }),
   },
 
   companies: {

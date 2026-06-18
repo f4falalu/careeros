@@ -81,6 +81,69 @@ export interface OpportunityPage {
   next_cursor: string | null
 }
 
+// ── Job Targets (intent layer) ────────────────────────────────
+export type FitTier = 'on_target' | 'unconfirmed' | 'adjacent'
+export type TargetStatus = 'active' | 'paused'
+
+export interface TargetLocks {
+  location?: boolean
+  work_model?: boolean
+  seniority?: boolean
+  min_salary?: boolean
+}
+
+export interface JobTarget {
+  id: string
+  label: string
+  role_titles: string[]
+  keywords: string[]
+  seniority: string[]
+  locations: string[]
+  work_models: WorkModel[]
+  min_salary: number | null
+  locks: TargetLocks
+  status: TargetStatus
+  created_at: string
+  updated_at: string
+  opportunity_count?: number // present on list responses
+}
+
+// An opportunity enriched with its link to a target (recommendations / target detail).
+export interface TargetedOpportunity extends Opportunity {
+  fit_tier: FitTier
+  capability_score: number | null
+  is_adjacent: boolean
+}
+
+export interface TargetTiers {
+  on_target: TargetedOpportunity[]
+  adjacent: TargetedOpportunity[]
+  unconfirmed: TargetedOpportunity[]
+}
+
+export interface JobTargetDetail extends JobTarget {
+  tiers: TargetTiers
+  count: number
+}
+
+export interface JobTargetRecommendations {
+  targets: (JobTarget & { tiers: TargetTiers; count: number })[]
+  untargeted: Opportunity[]
+  totals: { matched: number; untargeted: number }
+}
+
+export interface CreateJobTargetInput {
+  label: string
+  role_titles?: string[]
+  keywords?: string[]
+  seniority?: string[]
+  locations?: string[]
+  work_models?: WorkModel[]
+  min_salary?: number | null
+  locks?: TargetLocks
+  status?: TargetStatus
+}
+
 export interface Application {
   id: string
   opportunity_id: string

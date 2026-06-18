@@ -76,7 +76,47 @@ export async function runMatchAgent(
   const profileBonus = Math.min(achievementSummaries.length * 2, 10)
   const score = Math.min(100, Math.round(overlapScore + profileBonus))
 
-  // 3. LLM rationale (structured)
+  // 3. Link this opportunity to the user's active Job Targets (intent layer).
+  // Runs BEFORE the LLM rationale: tiering/hard-gating is deterministic (lib/targeting.ts)
+  // and must not be skipped when the rationale model is unavailable. Re-running match
+  // re-links the *active* targets from scratch; links to paused targets are left intact.
+  try {
+    const capabilityScore = requiredSkills.length > 0 ? Math.round(overlapScore) : null
+    const activeTargets = await db
+      .select()
+      .from(schema.jobTargets)
+      .where(and(eq(schema.jobTargets.userId, input.userId), eq(schema.jobTargets.status, 'active')))
+
+    const activeTargetIds = activeTargets.map((t) => t.id)
+    if (activeTargetIds.length > 0) {
+      await db
+        .delete(schema.opportunityTargets)
+        .where(
+          and(
+            eq(schema.opportunityTargets.opportunityId, input.opportunityId),
+            inArray(schema.opportunityTargets.targetId, activeTargetIds),
+          ),
+        )
+    }
+
+    for (const target of activeTargets) {
+      const result = evaluateTarget(target, opportunity, capabilityScore)
+      if (!result) continue
+      await db
+        .insert(schema.opportunityTargets)
+        .values({
+          opportunityId: input.opportunityId,
+          targetId: target.id,
+          fitTier: result.tier,
+          capabilityScore: capabilityScore != null ? String(capabilityScore) : null,
+        })
+        .onConflictDoNothing()
+    }
+  } catch (err) {
+    console.error('[match] target linking error (non-blocking):', String(err))
+  }
+
+  // 4. LLM rationale (structured)
   const prompt = `You are evaluating fit between a candidate and a job. Be honest and concise.
 
 Job: ${opportunity.roleTitle} (${opportunity.workModel ?? 'unknown'} work model)
@@ -121,54 +161,13 @@ Return a JSON object with:
     return { error: `LLM rationale failed: ${msg}` }
   }
 
-  // 4. Persist match score
+  // 5. Persist match score
   await db.insert(schema.matchScores).values({
     opportunityId: input.opportunityId,
     score: String(score),
     missingSkills: missing,
     rationale: rationale.slice(0, 500),
   })
-
-  // 4b. Link this opportunity to the user's active Job Targets (intent layer).
-  // Capability = JD-requirements ↔ user-skill overlap (null when the JD lists no skills).
-  // Tiering & hard-gating (locked conditions) live in lib/targeting.ts. Re-running match
-  // re-links the *active* targets from scratch so edits to targets/skills are reflected —
-  // links to paused targets are left untouched (pausing must preserve existing links).
-  try {
-    const capabilityScore = requiredSkills.length > 0 ? Math.round(overlapScore) : null
-    const activeTargets = await db
-      .select()
-      .from(schema.jobTargets)
-      .where(and(eq(schema.jobTargets.userId, input.userId), eq(schema.jobTargets.status, 'active')))
-
-    const activeTargetIds = activeTargets.map((t) => t.id)
-    if (activeTargetIds.length > 0) {
-      await db
-        .delete(schema.opportunityTargets)
-        .where(
-          and(
-            eq(schema.opportunityTargets.opportunityId, input.opportunityId),
-            inArray(schema.opportunityTargets.targetId, activeTargetIds),
-          ),
-        )
-    }
-
-    for (const target of activeTargets) {
-      const result = evaluateTarget(target, opportunity, capabilityScore)
-      if (!result) continue
-      await db
-        .insert(schema.opportunityTargets)
-        .values({
-          opportunityId: input.opportunityId,
-          targetId: target.id,
-          fitTier: result.tier,
-          capabilityScore: capabilityScore != null ? String(capabilityScore) : null,
-        })
-        .onConflictDoNothing()
-    }
-  } catch (err) {
-    console.error('[match] target linking error (non-blocking):', String(err))
-  }
 
   const output = { score, matchedSkills: matched, missingSkills: missing, rationale, strengths, gaps, recommendation }
 
